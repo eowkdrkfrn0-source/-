@@ -1590,9 +1590,11 @@ jobs:
                           val ex = hval(b.coa, "existing")
                           val h = XHeader(serial, hval(b.coa, "carrier"), hval(b.coa, "bk"), hval(b.coa, "vsl"), hval(b.coa, "shoring"),
                               b.coa, hval(b.coa, "size"), ex, ex)
-                          val size = hval(b.coa, "size").filter { it.isDigit() }.ifEmpty { "20" }
-                          val name = "${ymd}_${hval(b.coa, "bk")}_${size}_X_${xc.size}_-_${b.coa}"
-                              .replace(Regex("[^0-9A-Za-z가-힣_.-]"), "_") + ".xlsx"
+                          // 파일 이름: 작업일자 BK 피트 X 컨테이너대수 - 발신번호.xlsx  (예: 20261125 6473457150 20 X 16 - 81591.xlsx)
+                          val feet = hval(b.coa, "size").filter { it.isDigit() }.take(2).ifEmpty { "20" }
+                          val cnt = cap(b.coa).takeIf { it > 0 } ?: xc.size
+                          val bkName = hval(b.coa, "bk").trim().replace(Regex("[^0-9A-Za-z]"), "")
+                          val name = "$ymd $bkName $feet X $cnt - ${b.coa}.xlsx"
                           val f = File(cacheDir, name)
                           assets.open("template.xlsx").use { ins -> f.outputStream().use { os -> XlsxExport.build(ins, os, h, xc, per) } }
                           uris.add(FileProvider.getUriForFile(this, "com.nakyung.tally.files", f))
