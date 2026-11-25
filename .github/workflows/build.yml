@@ -57,8 +57,8 @@ jobs:
                   applicationId = "com.nakyung.tally"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "2.0"
+                  versionCode = 100 + (System.getenv("GITHUB_RUN_NUMBER") ?: "0").toInt()
+                  versionName = "2." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
               }
               signingConfigs {
                   create("fixed") {
@@ -104,6 +104,8 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-feature android:name="android.hardware.camera" android:required="true" />
               <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
               <uses-permission android:name="android.permission.VIBRATE" />
               <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
               <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
@@ -375,6 +377,8 @@ jobs:
               override fun onResume() {
                   super.onResume()
                   if (wantRecent && hasFileAccess()) { wantRecent = false; showRecent() }
+                  val pa = pendingApk
+                  if (pa != null && (Build.VERSION.SDK_INT < 26 || packageManager.canRequestPackageInstalls())) { pendingApk = null; installApk(pa) }
               }
 
               override fun onDestroy() {
@@ -538,7 +542,12 @@ jobs:
                   stopCamera()
                   screen = "setup"
                   val root = vbox()
-                  root.addView(header("컨테이너 탈리", "PL 불러오기 → 범위 → 스캔 → 컨 지정 → 엑셀"))
+                  root.addView(header("컨테이너 탈리", "PL 불러오기 → 범위 → 스캔 → 컨 지정 → 엑셀  ·  버전 ${BuildInfo.BUILD}"))
+                  newRelease?.let { r ->
+                      if (r.build > BuildInfo.BUILD)
+                          root.addView(btn("🔄  새 버전 ${r.build} 있음 → 업데이트", Color.rgb(200, 90, 20)) { startUpdate(r) })
+                  }
+                  if (!updateChecked) { updateChecked = true; checkUpdate(silent = true) }
                   root.addView(btn("📂  최근 파일에서 불러오기", PRIMARY) { openRecent() })
                   root.addView(btn("파일 직접 선택") { pickFiles.launch(arrayOf("*/*")) })
 
@@ -630,6 +639,15 @@ jobs:
                   root.addView(btn("🧪  테스트 모드 (사진 없이)", Color.rgb(140, 60, 160)) {
                       if (bookings.isEmpty()) toast("PL을 먼저 불러오세요") else showScan(true)
                   })
+                  root.addView(section("업데이트"))
+                  val uc = card()
+                  uc.addView(label("현재 버전 ${BuildInfo.BUILD}  ·  저장소 ${upRepo()}", 14f, SUB))
+                  uc.addView(btn("🔄  업데이트 확인", PRIMARY) { checkUpdate(silent = false) })
+                  uc.addView(label("비공개 저장소면 GitHub 토큰 입력 (공개면 비워두기)", 12f, SUB))
+                  val eTok = edit("토큰 (선택)", upPrefs.getString("token", "") ?: "")
+                  eTok.addTextChangedListener(watcher { upPrefs.edit().putString("token", eTok.text.toString().trim()).apply() })
+                  uc.addView(eTok)
+                  root.addView(uc)
                   root.addView(section("초기화"))
                   root.addView(row(
                       btn("탈리 기록 지우기", Color.rgb(70, 40, 46)) {
@@ -1617,6 +1635,63 @@ jobs:
                   }
               }
 
+              // ======================= 앱 업데이트 =======================
+              private var newRelease: Release? = null
+              private var updateChecked = false
+              private var pendingApk: File? = null
+              private val upPrefs by lazy { getSharedPreferences("update", MODE_PRIVATE) }
+              private fun upRepo(): String = upPrefs.getString("repo", null)?.takeIf { it.isNotBlank() } ?: BuildInfo.REPO
+              private fun upToken(): String = upPrefs.getString("token", "") ?: ""
+
+              private fun checkUpdate(silent: Boolean) {
+                  if (!silent) toast("업데이트 확인 중…")
+                  Thread {
+                      try {
+                          val r = Updater.latest(upRepo(), upToken())
+                          runOnUiThread {
+                              newRelease = r
+                              if (r != null && r.build > BuildInfo.BUILD) {
+                                  if (screen == "setup") redraw()
+                                  if (!silent) AlertDialog.Builder(this).setTitle("새 버전 ${r.build}")
+                                      .setMessage("지금 버전 ${BuildInfo.BUILD} → 새 버전 ${r.build}\n업데이트할까요?")
+                                      .setPositiveButton("업데이트") { _, _ -> startUpdate(r) }
+                                      .setNegativeButton("나중에", null).show()
+                              } else if (!silent) toast("최신 버전입니다 (${BuildInfo.BUILD})")
+                          }
+                      } catch (e: Exception) {
+                          if (!silent) runOnUiThread { toast("업데이트 확인 실패: ${e.message}") }
+                      }
+                  }.start()
+              }
+
+              private fun startUpdate(r: Release) {
+                  val dlg = AlertDialog.Builder(this).setTitle("다운로드 중").setMessage("0%").setCancelable(false).show()
+                  Thread {
+                      try {
+                          val f = File(File(cacheDir, "apk"), "Tally-${r.build}.apk")
+                          Updater.download(r, upToken(), f) { p -> runOnUiThread { dlg.setMessage("$p%") } }
+                          runOnUiThread { dlg.dismiss(); installApk(f) }
+                      } catch (e: Exception) {
+                          runOnUiThread { dlg.dismiss(); toast("다운로드 실패: ${e.message}") }
+                      }
+                  }.start()
+              }
+
+              private fun installApk(f: File) {
+                  if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+                      pendingApk = f
+                      toast("'이 출처 허용'을 켜고 돌아오면 설치가 시작됩니다")
+                      startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                      return
+                  }
+                  saveState()
+                  val uri = FileProvider.getUriForFile(this, "com.nakyung.tally.files", f)
+                  startActivity(Intent(Intent.ACTION_VIEW).apply {
+                      setDataAndType(uri, "application/vnd.android.package-archive")
+                      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                  })
+              }
+
               // ======================= 저장 =======================
               private fun saveState() {
                   val o = JSONObject()
@@ -2037,7 +2112,82 @@ jobs:
               }
           }
           TALLY_EOF
+          mkdir -p "app/src/main/java/com/nakyung/tally"
+          cat > 'app/src/main/java/com/nakyung/tally/Updater.kt' <<'TALLY_EOF'
+          package com.nakyung.tally
+
+          import org.json.JSONObject
+          import java.io.File
+          import java.net.HttpURLConnection
+          import java.net.URL
+
+          class Release(val build: Int, val url: String, val apiUrl: String, val name: String)
+
+          /** GitHub Releases 에서 최신 APK 확인·다운로드 */
+          object Updater {
+
+              private fun open(url: String, token: String, accept: String): HttpURLConnection {
+                  val c = URL(url).openConnection() as HttpURLConnection
+                  c.connectTimeout = 15000
+                  c.readTimeout = 30000
+                  c.instanceFollowRedirects = true
+                  c.setRequestProperty("Accept", accept)
+                  c.setRequestProperty("User-Agent", "Tally-App")
+                  if (token.isNotBlank()) c.setRequestProperty("Authorization", "Bearer ${token.trim()}")
+                  return c
+              }
+
+              fun latest(repo: String, token: String): Release? {
+                  val c = open("https://api.github.com/repos/${repo.trim()}/releases/latest", token, "application/vnd.github+json")
+                  val code = c.responseCode
+                  if (code == 404) throw Exception("저장소를 찾을 수 없음 (비공개면 공개로 바꾸거나 토큰 입력)")
+                  if (code != 200) throw Exception("HTTP $code")
+                  val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                  val n = j.optString("tag_name").filter { it.isDigit() }.toIntOrNull() ?: return null
+                  val assets = j.optJSONArray("assets") ?: return null
+                  for (i in 0 until assets.length()) {
+                      val a = assets.getJSONObject(i)
+                      if (a.optString("name").endsWith(".apk"))
+                          return Release(n, a.optString("browser_download_url"), a.optString("url"), a.optString("name"))
+                  }
+                  return null
+              }
+
+              fun download(r: Release, token: String, dest: File, progress: (Int) -> Unit) {
+                  val c = if (token.isNotBlank()) open(r.apiUrl, token, "application/octet-stream")
+                  else open(r.url, "", "application/octet-stream")
+                  val code = c.responseCode
+                  if (code != 200) throw Exception("다운로드 실패 HTTP $code")
+                  val total = c.contentLength
+                  dest.parentFile?.mkdirs()
+                  c.inputStream.use { ins ->
+                      dest.outputStream().use { out ->
+                          val buf = ByteArray(64 * 1024)
+                          var done = 0L
+                          var last = -1
+                          while (true) {
+                              val n = ins.read(buf)
+                              if (n < 0) break
+                              out.write(buf, 0, n)
+                              done += n
+                              if (total > 0) {
+                                  val p = (done * 100 / total).toInt()
+                                  if (p != last) { last = p; progress(p) }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          TALLY_EOF
           echo "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" | base64 -d > app/tally.jks
+          cat > app/src/main/java/com/nakyung/tally/BuildInfo.kt <<'TALLY_EOF'
+          package com.nakyung.tally
+          object BuildInfo {
+              const val REPO = "${{ github.repository }}"
+              const val BUILD = ${{ github.run_number }}
+          }
+          TALLY_EOF
           mkdir -p app/src/main/assets
           base64 -d > app/src/main/assets/template.xlsx <<'TALLY_EOF'
           UEsDBBQAAAAIAAAAIQAhjEY6ZAEAAIwFAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbMWUy04DMQxF
