@@ -361,6 +361,7 @@ jobs:
                   loadState()
                   onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
                       override fun handleOnBackPressed() {
+                          if (screen == "splash") return          // 시작 화면 중에는 뒤로가기도 막음
                           if (screen == "setup") finish() else showSetup()
                       }
                   })
@@ -393,8 +394,7 @@ jobs:
                   screen = "splash"
                   var done = false
                   val go = { if (!done) { done = true; next() } }
-                  val v = SplashView(this) { go() }
-                  v.setOnClickListener { go() }
+                  val v = SplashView(this) { go() }   // 누르기로 건너뛰기 없음 — 끝까지 재생
                   setContentView(v)
               }
 
@@ -552,7 +552,14 @@ jobs:
                   stopCamera()
                   screen = "setup"
                   val root = vbox()
-                  root.addView(header("고려아연 TALLY", "PL 불러오기 → 범위 → 스캔 → 컨 지정 → 엑셀  ·  버전 ${BuildInfo.BUILD}"))
+                  val hd = header("고려아연 TALLY", "PL 불러오기 → 범위 → 스캔 → 컨 지정 → 엑셀  ·  버전 ${BuildInfo.BUILD}")
+                  hd.setOnClickListener {
+                      if (testUnlocked) return@setOnClickListener
+                      testTaps++
+                      if (testTaps >= 10) { testUnlocked = true; testTaps = 0; toast("🧪 테스트 모드가 열렸습니다"); redraw() }
+                      else if (testTaps >= 7) toast("테스트 모드까지 ${10 - testTaps}번")
+                  }
+                  root.addView(hd)
                   newRelease?.let { r ->
                       if (r.build > BuildInfo.BUILD)
                           root.addView(btn("🔄  새 버전 ${r.build} 있음 → 업데이트", Color.rgb(200, 90, 20)) { startUpdate(r) })
@@ -646,17 +653,13 @@ jobs:
                       if (bookings.isEmpty()) toast("PL을 먼저 불러오세요") else showScan()
                   }.apply { textSize = 19f; minHeight = dp(64) })
                   root.addView(btn("📋  결과 · 컨테이너 지정 · 엑셀", PRIMARY) { showResult() })
-                  root.addView(btn("🧪  테스트 모드 (사진 없이)", Color.rgb(140, 60, 160)) {
+                  if (testUnlocked) root.addView(btn("🧪  테스트 모드 (사진 없이)", Color.rgb(140, 60, 160)) {
                       if (bookings.isEmpty()) toast("PL을 먼저 불러오세요") else showScan(true)
                   })
                   root.addView(section("업데이트"))
                   val uc = card()
-                  uc.addView(label("현재 버전 ${BuildInfo.BUILD}  ·  저장소 ${upRepo()}", 14f, SUB))
+                  uc.addView(label("현재 버전 ${BuildInfo.BUILD}", 14f, SUB))
                   uc.addView(btn("🔄  업데이트 확인", PRIMARY) { checkUpdate(silent = false) })
-                  uc.addView(label("비공개 저장소면 GitHub 토큰 입력 (공개면 비워두기)", 12f, SUB))
-                  val eTok = edit("토큰 (선택)", upPrefs.getString("token", "") ?: "")
-                  eTok.addTextChangedListener(watcher { upPrefs.edit().putString("token", eTok.text.toString().trim()).apply() })
-                  uc.addView(eTok)
                   root.addView(uc)
                   root.addView(section("초기화"))
                   root.addView(row(
@@ -910,6 +913,8 @@ jobs:
 
               // ======================= 스캔 화면 =======================
               private var testMode = false
+              private var testTaps = 0
+              private var testUnlocked = false
               private var quiet = false
 
               private fun showScan(test: Boolean = false) {
@@ -1651,7 +1656,7 @@ jobs:
               private var pendingApk: File? = null
               private val upPrefs by lazy { getSharedPreferences("update", MODE_PRIVATE) }
               private fun upRepo(): String = upPrefs.getString("repo", null)?.takeIf { it.isNotBlank() } ?: BuildInfo.REPO
-              private fun upToken(): String = upPrefs.getString("token", "") ?: ""
+              private fun upToken(): String = ""
 
               private fun checkUpdate(silent: Boolean) {
                   if (!silent) toast("업데이트 확인 중…")
@@ -2150,7 +2155,7 @@ jobs:
               fun latest(repo: String, token: String): Release? {
                   val c = open("https://api.github.com/repos/${repo.trim()}/releases/latest", token, "application/vnd.github+json")
                   val code = c.responseCode
-                  if (code == 404) throw Exception("저장소를 찾을 수 없음 (비공개면 공개로 바꾸거나 토큰 입력)")
+                  if (code == 404) throw Exception("업데이트 서버를 찾을 수 없음")
                   if (code != 200) throw Exception("HTTP $code")
                   val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
                   val n = j.optString("tag_name").filter { it.isDigit() }.toIntOrNull() ?: return null
