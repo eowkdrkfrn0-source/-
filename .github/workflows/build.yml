@@ -7,6 +7,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/setup-java@v4
         with:
@@ -287,7 +289,7 @@ jobs:
           }
 
           class CInfo(val cntr: String, val seal: String, val tare: String)
-          class CList(val coa: String, val conts: List<CInfo>, val bk: String, val carrier: String, val size: String, val date: String)
+          class CList(val coa: String, val conts: List<CInfo>, val bk: String, val carrier: String, val size: String, val date: String, val src: String = "")
 
           /** 5개 묶음 */
           class Group(val coa: String, val bds: MutableList<Int>, var cntr: String = "")
@@ -477,6 +479,24 @@ jobs:
                       .apply { setMargins(0, dp(4), 0, dp(4)) }
               }
 
+              private fun docRow(icon: String, name: String, info: String, onDelete: () -> Unit): LinearLayout =
+                  LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                      background = round(FIELD, 10)
+                      setPadding(dp(10), dp(6), dp(6), dp(6))
+                      layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(3), 0, dp(3)) }
+                      val tx = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+                      tx.addView(label("$icon  $name", 13f, Color.WHITE, true))
+                      tx.addView(label(info, 12f, SUB))
+                      addView(tx, LinearLayout.LayoutParams(0, -2, 1f))
+                      addView(Button(this@MainActivity).apply {
+                          text = "삭제"; textSize = 13f; isAllCaps = false; setTextColor(Color.WHITE)
+                          background = RippleDrawable(ColorStateList.valueOf(Color.argb(60, 255, 255, 255)), round(DANGER, 10), null)
+                          stateListAnimator = null; minHeight = dp(40); minWidth = dp(64)
+                          setOnClickListener { onDelete() }
+                      }, LinearLayout.LayoutParams(-2, -2))
+                  }
+
               private fun watcher(f: () -> Unit) = object : TextWatcher {
                   override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                   override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -485,8 +505,19 @@ jobs:
 
               private fun fmt(n: Double): String = if (n == Math.floor(n)) String.format("%,d", n.toLong()) else String.format("%,.1f", n)
 
+              private var curScroll: ScrollView? = null
+
               private fun page(root: LinearLayout) {
-                  setContentView(ScrollView(this).apply { setBackgroundColor(BG); isFillViewport = true; addView(root) })
+                  val sv = ScrollView(this).apply { setBackgroundColor(BG); isFillViewport = true; addView(root) }
+                  curScroll = sv
+                  setContentView(sv)
+              }
+
+              /** 같은 화면 다시 그리기 (스크롤 위치 유지) */
+              private fun redraw() {
+                  val y = curScroll?.scrollY ?: 0
+                  when (screen) { "result" -> showResult(); "setup" -> showSetup(); "scan" -> { refreshScanUi(); return }; else -> return }
+                  curScroll?.post { curScroll?.scrollTo(0, y) }
               }
 
               private fun vbox(): LinearLayout = LinearLayout(this).apply {
@@ -539,19 +570,40 @@ jobs:
                               if (rem != 0) GOLD else SUB))
                       }
                       cd.addView(label(b.plName, 11f, Color.rgb(110, 118, 134)))
-                      cd.addView(btn("빼기", Color.rgb(70, 40, 46)) {
-                          AlertDialog.Builder(this).setMessage("${b.coa} PL과 그 탈리 기록을 뺄까요?")
-                              .setPositiveButton("빼기") { _, _ ->
-                                  bookings.remove(b); groups.removeAll { it.coa == b.coa }
-                                  history.removeAll { it.startsWith(b.coa + ":") }
-                                  rebuildIndex(); saveState(); showSetup()
-                              }.setNegativeButton("취소", null).show()
-                      })
                       root.addView(cd)
                   }
                   val orphan = clists.keys.filter { k -> bookings.none { it.coa == k } }
                   if (orphan.isNotEmpty())
                       root.addView(label("컨 목록만 있음(PL 없음): " + orphan.joinToString { "$it ${cap(it)}대" }, 13f, SUB))
+
+                  // ---- 불러온 문서 ----
+                  root.addView(section("📁 불러온 문서"))
+                  val dc = card()
+                  if (bookings.isEmpty() && clists.isEmpty()) dc.addView(label("불러온 문서가 없습니다", 14f, SUB))
+                  for (b in bookings) {
+                      dc.addView(docRow("📄", b.plName, "PL · ${b.coa} · ${b.items.size}개") {
+                          val n = groups.filter { it.coa == b.coa }.sumOf { it.bds.size }
+                          AlertDialog.Builder(this).setTitle("PL 삭제")
+                              .setMessage("${b.plName}\n\n${b.coa} PL을 지웁니다." + if (n > 0) "\n⚠ 이 발신번호 탈리 기록 ${n}개도 같이 지워집니다." else "")
+                              .setPositiveButton("삭제") { _, _ ->
+                                  bookings.remove(b); groups.removeAll { it.coa == b.coa }
+                                  history.removeAll { it.startsWith(b.coa + ":") }; exported.remove(b.coa)
+                                  rebuildIndex(); saveState(); redraw()
+                              }.setNegativeButton("취소", null).show()
+                      })
+                  }
+                  val bySrc = clists.values.groupBy { it.src }
+                  for ((src, cls) in bySrc) {
+                      val nm = if (src.isEmpty()) "컨테이너 목록" else src
+                      dc.addView(docRow("📊", nm, "컨 목록 · " + cls.joinToString(", ") { "${it.coa} ${it.conts.size}대" }) {
+                          AlertDialog.Builder(this).setTitle("컨 목록 삭제")
+                              .setMessage("$nm\n\n컨 목록을 지웁니다. (탈리 기록은 그대로)")
+                              .setPositiveButton("삭제") { _, _ ->
+                                  cls.forEach { clists.remove(it.coa) }; saveState(); redraw()
+                              }.setNegativeButton("취소", null).show()
+                      })
+                  }
+                  root.addView(dc)
 
                   root.addView(section("화주 범위"))
                   val rc2 = card()
@@ -566,7 +618,7 @@ jobs:
                   rc2.addView(btn("범위 적용", PRIMARY) {
                       rangeText = eRange.text.toString()
                       val n = parseRanges(rangeText)
-                      saveState(); toast("범위 ${n}건 적용"); showSetup()
+                      saveState(); toast("범위 ${n}건 적용"); redraw()
                   })
                   root.addView(rc2)
 
@@ -638,7 +690,7 @@ jobs:
                   toast("불러오는 중…")
                   Thread {
                       val pdfs = ArrayList<Pair<String, List<Item>>>()
-                      val lists = ArrayList<List<Map<Int, String>>>()
+                      val lists = ArrayList<Pair<String, List<Map<Int, String>>>>()
                       val msgs = ArrayList<String>()
                       for ((name, open) in srcs) {
                           try {
@@ -650,7 +702,7 @@ jobs:
                                   val items = parsePl(text)
                                   if (items.isEmpty()) msgs.add("$name: LOT 번호 없음") else pdfs.add(Pair(name, items))
                               } else if (bytes.size > 4 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) {
-                                  lists.add(XlsxRead.read(ByteArrayInputStream(bytes)))
+                                  lists.add(Pair(name, XlsxRead.read(ByteArrayInputStream(bytes))))
                               } else msgs.add("$name: PDF·엑셀(xlsx)만 됩니다")
                           } catch (e: Exception) {
                               msgs.add("$name: 읽기 실패 ${e.message}")
@@ -658,11 +710,11 @@ jobs:
                       }
                       runOnUiThread {
                           for ((name, items) in pdfs) msgs.add(addBooking(name, items))
-                          for (rows in lists) msgs.add(applyContList(rows))
+                          for ((name, rows) in lists) msgs.add(applyContList(rows, name))
                           rebuildIndex(); saveState()
                           AlertDialog.Builder(this).setTitle("불러오기").setMessage(msgs.joinToString("\n"))
                               .setPositiveButton("확인", null).show()
-                          when (screen) { "result" -> showResult(); "scan" -> refreshScanUi(); else -> showSetup() }
+                          if (screen == "result" || screen == "scan") redraw() else showSetup()
                       }
                   }.start()
               }
@@ -718,7 +770,7 @@ jobs:
                       .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(millis))
               }
 
-              private fun applyContList(rows: List<Map<Int, String>>): String {
+              private fun applyContList(rows: List<Map<Int, String>>, src: String = ""): String {
                   fun norm(x: String) = x.replace(" ", "").uppercase()
                   val hi = rows.indexOfFirst { r -> r.values.any { norm(it) == "TARE" } && r.values.any { norm(it) in setOf("컨", "컨테이너", "CNTR", "CNTRNO") } }
                   if (hi < 0) return "컨 목록: '컨 / 씰 / TARE' 제목 줄 없음"
@@ -744,7 +796,8 @@ jobs:
                           rs.map { CInfo(g(it, cC).trim().uppercase(), normNum(g(it, sC)), normNum(g(it, tC))) },
                           normNum(g(f, bkC)), g(f, lineC).trim(),
                           if (z.isNotEmpty() && z.all { it.isDigit() }) "$z'" else z,
-                          if (g(f, dateC).isNotBlank()) serialToYmd(g(f, dateC)) else ""
+                          if (g(f, dateC).isNotBlank()) serialToYmd(g(f, dateC)) else "",
+                          src
                       )
                       out.add("$coa ${rs.size}대")
                   }
@@ -1384,7 +1437,7 @@ jobs:
                                       val bd = arr[w]
                                       g.bds.remove(bd); history.remove("${b.coa}:$bd")
                                       if (g.bds.isEmpty()) groups.remove(g)
-                                      doneShown = false; saveState(); showResult()
+                                      doneShown = false; saveState(); redraw()
                                   }.setNegativeButton("취소", null).show()
                           }
                           gc.addView(tv)
@@ -1408,7 +1461,7 @@ jobs:
                               val free = list.filter { c -> groups.none { it !== g && it.coa == b.coa && it.cntr == c.cntr } }
                               AlertDialog.Builder(this).setTitle("${groupLabel(g)} 컨테이너")
                                   .setItems(free.map { "${it.cntr}   씰 ${it.seal}   ${it.tare}" }.toTypedArray()) { _, w ->
-                                      g.cntr = free[w].cntr; saveState(); showResult()
+                                      g.cntr = free[w].cntr; saveState(); redraw()
                                   }.setNegativeButton("취소", null).show()
                           })
                           cd.addView(gc)
@@ -1556,7 +1609,7 @@ jobs:
                       saveState()
                       toast("엑셀 ${uris.size}개: " + names.joinToString(", "))
                       startActivity(Intent.createChooser(i, "엑셀 공유"))
-                      if (screen == "result") showResult()
+                      if (screen == "result") redraw()
                   } catch (e: Exception) {
                       toast("엑셀 만들기 실패: ${e.message}")
                   }
@@ -1576,7 +1629,7 @@ jobs:
                   val ca = JSONArray()
                   for (c in clists.values) {
                       ca.put(JSONObject().apply {
-                          put("coa", c.coa); put("bk", c.bk); put("carrier", c.carrier); put("size", c.size); put("date", c.date)
+                          put("coa", c.coa); put("bk", c.bk); put("carrier", c.carrier); put("size", c.size); put("date", c.date); put("src", c.src)
                           put("conts", JSONArray(c.conts.map { JSONArray(listOf(it.cntr, it.seal, it.tare)) }))
                       })
                   }
@@ -1616,7 +1669,7 @@ jobs:
                           val co = ca.getJSONObject(i)
                           val arr = co.getJSONArray("conts")
                           val conts = (0 until arr.length()).map { k -> val a = arr.getJSONArray(k); CInfo(a.getString(0), a.getString(1), a.getString(2)) }
-                          clists[co.getString("coa")] = CList(co.getString("coa"), conts, co.optString("bk"), co.optString("carrier"), co.optString("size"), co.optString("date"))
+                          clists[co.getString("coa")] = CList(co.getString("coa"), conts, co.optString("bk"), co.optString("carrier"), co.optString("size"), co.optString("date"), co.optString("src"))
                       }
                       ranges.clear()
                       val ra = o.optJSONObject("ranges")
@@ -2476,6 +2529,17 @@ jobs:
       - name: Build APK
         working-directory: proj
         run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: cp proj/app/build/outputs/apk/release/app-release.apk "Tally-${{ github.run_number }}.apk"
+
+      - name: Publish APK (Releases)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: 탈리 ${{ github.run_number }}
+          files: Tally-${{ github.run_number }}.apk
+          make_latest: true
 
       - uses: actions/upload-artifact@v4
         with:
