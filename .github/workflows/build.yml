@@ -1,1 +1,895 @@
+name: Build Tally APK
 
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Generate project
+        run: |
+          mkdir -p proj && cd proj
+          cat > 'settings.gradle.kts' <<'TALLY_EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "Tally"
+          include(":app")
+          TALLY_EOF
+          cat > 'build.gradle.kts' <<'TALLY_EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          TALLY_EOF
+          cat > 'gradle.properties' <<'TALLY_EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx4g
+          kotlin.code.style=official
+          TALLY_EOF
+          mkdir -p "app"
+          cat > 'app/build.gradle.kts' <<'TALLY_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.nakyung.tally"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.nakyung.tally"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              signingConfigs {
+                  create("fixed") {
+                      storeFile = file("tally.jks")
+                      storePassword = "tally1234"
+                      keyAlias = "tally"
+                      keyPassword = "tally1234"
+                  }
+              }
+              buildTypes {
+                  getByName("release") {
+                      isMinifyEnabled = false
+                      signingConfig = signingConfigs.getByName("fixed")
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+              packaging {
+                  resources { excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*", "META-INF/*.kotlin_module") }
+              }
+          }
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.activity:activity-ktx:1.9.2")
+              implementation("androidx.camera:camera-core:1.3.4")
+              implementation("androidx.camera:camera-camera2:1.3.4")
+              implementation("androidx.camera:camera-lifecycle:1.3.4")
+              implementation("androidx.camera:camera-view:1.3.4")
+              implementation("com.google.mlkit:text-recognition:16.0.1")
+              implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+          }
+          TALLY_EOF
+          mkdir -p "app/src/main"
+          cat > 'app/src/main/AndroidManifest.xml' <<'TALLY_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-feature android:name="android.hardware.camera" android:required="true" />
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <application
+                  android:label="탈리"
+                  android:icon="@android:drawable/ic_menu_camera"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <provider
+                      android:name="androidx.core.content.FileProvider"
+                      android:authorities="com.nakyung.tally.files"
+                      android:exported="false"
+                      android:grantUriPermissions="true">
+                      <meta-data
+                          android:name="android.support.FILE_PROVIDER_PATHS"
+                          android:resource="@xml/paths" />
+                  </provider>
+              </application>
+          </manifest>
+          TALLY_EOF
+          mkdir -p "app/src/main/res/xml"
+          cat > 'app/src/main/res/xml/paths.xml' <<'TALLY_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths><cache-path name="c" path="." /></paths>
+          TALLY_EOF
+          mkdir -p "app/src/main/java/com/nakyung/tally"
+          cat > 'app/src/main/java/com/nakyung/tally/MainActivity.kt' <<'TALLY_EOF'
+          package com.nakyung.tally
+
+          import android.Manifest
+          import android.app.AlertDialog
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.media.AudioManager
+          import android.media.ToneGenerator
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.SystemClock
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import android.provider.OpenableColumns
+          import android.text.Editable
+          import android.text.InputType
+          import android.text.TextWatcher
+          import android.util.Size
+          import android.view.Gravity
+          import android.view.OrientationEventListener
+          import android.view.Surface
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.WindowManager
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+          import androidx.activity.ComponentActivity
+          import androidx.activity.OnBackPressedCallback
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.camera.core.Camera
+          import androidx.camera.core.CameraSelector
+          import androidx.camera.core.ExperimentalGetImage
+          import androidx.camera.core.ImageAnalysis
+          import androidx.camera.core.ImageProxy
+          import androidx.camera.core.Preview
+          import androidx.camera.core.resolutionselector.ResolutionSelector
+          import androidx.camera.core.resolutionselector.ResolutionStrategy
+          import androidx.camera.lifecycle.ProcessCameraProvider
+          import androidx.camera.view.PreviewView
+          import androidx.core.content.ContextCompat
+          import androidx.core.content.FileProvider
+          import com.google.mlkit.vision.common.InputImage
+          import com.google.mlkit.vision.text.Text
+          import com.google.mlkit.vision.text.TextRecognition
+          import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+          import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+          import com.tom_roush.pdfbox.pdmodel.PDDocument
+          import com.tom_roush.pdfbox.text.PDFTextStripper
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.File
+          import java.util.concurrent.Executors
+
+          data class Item(val bd: Int, val lot: String, val kg: Int) {
+              val core: String get() = lot.takeLast(15)
+          }
+
+          class MainActivity : ComponentActivity() {
+
+              // ---------- 데이터 ----------
+              private var items: List<Item> = emptyList()
+              private var byBd: Map<Int, Item> = emptyMap()
+              private var byCore: Map<String, Item> = emptyMap()
+              private var plName = ""
+              private var startBd = 1
+              private var endBd = 1
+              private var nCont = 1
+              private var per = 5
+              private var conts: MutableList<MutableList<Int>> = mutableListOf()
+              private var contNos: MutableList<String> = mutableListOf()
+              private val history = mutableListOf<Int>()
+
+              // ---------- 스캔 ----------
+              private var screen = "setup"
+              private var scanning = false
+              private var camera: Camera? = null
+              private var analysis: ImageAnalysis? = null
+              private var provider: ProcessCameraProvider? = null
+              private var torchOn = false
+              private var zoomIdx = 0
+              private val zooms = floatArrayOf(1f, 2f, 3f)
+              private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
+              private val exec = Executors.newSingleThreadExecutor()
+              private val seen = HashMap<String, MutableList<Long>>()
+              private val lastNotice = HashMap<String, Long>()
+              private var tone: ToneGenerator? = null
+              private var orientationListener: OrientationEventListener? = null
+
+              private lateinit var topPanel: LinearLayout
+              private lateinit var tvHeader: TextView
+              private lateinit var tvSub: TextView
+              private lateinit var slotsBox: LinearLayout
+              private lateinit var tvStatus: TextView
+              private lateinit var btnTorch: Button
+              private lateinit var btnZoom: Button
+
+              private val CONFIRM = 3          // 같은 번호가 3번 읽혀야 확정 (오인식 방지)
+              private val WINDOW_MS = 2500L
+
+              private val pickPdf = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                  if (uri != null) loadPdf(uri)
+              }
+              private val camPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+                  if (ok) startCamera() else toast("카메라 권한이 필요합니다")
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  PDFBoxResourceLoader.init(applicationContext)
+                  try { tone = ToneGenerator(AudioManager.STREAM_MUSIC, 100) } catch (e: Exception) { }
+                  loadState()
+                  onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                      override fun handleOnBackPressed() {
+                          if (screen == "setup") finish() else showSetup()
+                      }
+                  })
+                  showSetup()
+              }
+
+              override fun onDestroy() {
+                  super.onDestroy()
+                  orientationListener?.disable()
+                  tone?.release()
+                  exec.shutdown()
+              }
+
+              // ======================= UI 헬퍼 =======================
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+              private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+              private fun label(s: String, size: Float = 16f, color: Int = Color.WHITE, bold: Boolean = false): TextView =
+                  TextView(this).apply {
+                      text = s; textSize = size; setTextColor(color)
+                      if (bold) setTypeface(typeface, Typeface.BOLD)
+                      setPadding(0, dp(4), 0, dp(4))
+                  }
+
+              private fun btn(s: String, onClick: () -> Unit): Button =
+                  Button(this).apply {
+                      text = s; textSize = 17f; isAllCaps = false
+                      setOnClickListener { onClick() }
+                  }
+
+              private fun numEdit(hint: String, v: Int): EditText =
+                  EditText(this).apply {
+                      this.hint = hint; inputType = InputType.TYPE_CLASS_NUMBER
+                      setText(v.toString()); textSize = 20f
+                      setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+                  }
+
+              private fun row(vararg views: View): LinearLayout =
+                  LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      views.forEach { addView(it, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)) }
+                  }
+
+              private fun watcher(f: () -> Unit) = object : TextWatcher {
+                  override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                  override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                  override fun afterTextChanged(s: Editable?) { f() }
+              }
+
+              private fun fmt(n: Int) = String.format("%,d", n)
+
+              // ======================= 설정 화면 =======================
+              private fun showSetup() {
+                  stopCamera()
+                  screen = "setup"
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(16), dp(16), dp(16))
+                      setBackgroundColor(Color.rgb(24, 24, 28))
+                  }
+                  root.addView(label("컨테이너 탈리", 26f, bold = true))
+
+                  root.addView(btn("① 패킹리스트 PDF 열기") { pickPdf.launch(arrayOf("application/pdf")) })
+                  val plInfo = if (items.isEmpty()) "패킹리스트 없음"
+                  else "$plName\n${items.size}개 · B/D ${items.first().bd}~${items.last().bd} · ${fmt(items.sumOf { it.kg })}kg"
+                  root.addView(label(plInfo, 15f, Color.LTGRAY))
+
+                  val eStart = numEdit("시작 번호", startBd)
+                  val eEnd = numEdit("끝 번호", endBd)
+                  val eCont = numEdit("컨테이너 대수", nCont)
+                  val ePer = numEdit("컨테이너당 개수", per)
+                  root.addView(row(label("시작 B/D"), label("끝 B/D")))
+                  root.addView(row(eStart, eEnd))
+                  root.addView(row(label("컨테이너 대수"), label("컨테이너당")))
+                  root.addView(row(eCont, ePer))
+
+                  val tvCalc = label("", 16f, Color.YELLOW)
+                  root.addView(tvCalc)
+                  fun recalc() {
+                      val s = eStart.text.toString().toIntOrNull() ?: 0
+                      val e = eEnd.text.toString().toIntOrNull() ?: 0
+                      val c = eCont.text.toString().toIntOrNull() ?: 0
+                      val p = ePer.text.toString().toIntOrNull() ?: 0
+                      val inRange = items.count { it.bd in s..e }
+                      val cap = c * p
+                      val kg = items.filter { it.bd in s..e }.sumOf { it.kg }
+                      val ok = inRange == cap
+                      tvCalc.setTextColor(if (ok) Color.rgb(120, 230, 120) else Color.rgb(255, 120, 120))
+                      tvCalc.text = "범위 ${inRange}개 (${fmt(kg)}kg)  /  컨테이너 ${c}대 × ${p} = ${cap}" +
+                              if (ok) "  ✔" else "  ⚠ 개수 불일치"
+                  }
+                  listOf(eStart, eEnd, eCont, ePer).forEach { it.addTextChangedListener(watcher { recalc() }) }
+                  recalc()
+
+                  root.addView(btn("② 새로 탈리 시작") {
+                      val s = eStart.text.toString().toIntOrNull()
+                      val e = eEnd.text.toString().toIntOrNull()
+                      val c = eCont.text.toString().toIntOrNull()
+                      val p = ePer.text.toString().toIntOrNull()
+                      when {
+                          items.isEmpty() -> toast("패킹리스트 PDF를 먼저 여세요")
+                          s == null || e == null || s > e -> toast("번호 범위를 확인하세요")
+                          c == null || c < 1 || p == null || p < 1 -> toast("컨테이너 대수/개수를 확인하세요")
+                          else -> {
+                              val begin = {
+                                  startBd = s!!; endBd = e!!; nCont = c!!; per = p!!
+                                  conts = MutableList(nCont) { mutableListOf<Int>() }
+                                  contNos = MutableList(nCont) { "" }
+                                  history.clear(); seen.clear(); lastNotice.clear()
+                                  saveState(); showScan()
+                              }
+                              if (history.isNotEmpty()) {
+                                  AlertDialog.Builder(this).setMessage("기존 탈리 기록이 지워집니다. 새로 시작할까요?")
+                                      .setPositiveButton("새로 시작") { _, _ -> begin() }
+                                      .setNegativeButton("취소", null).show()
+                              } else begin()
+                          }
+                      }
+                  })
+                  if (conts.isNotEmpty()) {
+                      val done = conts.sumOf { it.size }
+                      root.addView(label("진행 중: #$startBd~#$endBd · ${done}/${nCont * per}", 15f, Color.LTGRAY))
+                      root.addView(btn("이어서 스캔") { showScan() })
+                      root.addView(btn("결과 보기 / 공유") { showResult() })
+                  }
+                  setContentView(ScrollView(this).apply {
+                      setBackgroundColor(Color.rgb(24, 24, 28)); addView(root)
+                  })
+              }
+
+              // ======================= PDF 읽기 =======================
+              private fun loadPdf(uri: Uri) {
+                  toast("패킹리스트 읽는 중…")
+                  var name = "packing list"
+                  try {
+                      contentResolver.query(uri, null, null, null, null)?.use { c ->
+                          val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                          if (i >= 0 && c.moveToFirst()) name = c.getString(i)
+                      }
+                  } catch (e: Exception) { }
+                  Thread {
+                      try {
+                          val text = contentResolver.openInputStream(uri)!!.use { ins ->
+                              PDDocument.load(ins).use { doc ->
+                                  val st = PDFTextStripper()
+                                  st.setSortByPosition(true)
+                                  st.getText(doc)
+                              }
+                          }
+                          val parsed = parsePl(text)
+                          runOnUiThread {
+                              if (parsed.isEmpty()) toast("LOT 번호를 찾지 못했습니다")
+                              else {
+                                  setItems(parsed); plName = name
+                                  if (conts.isEmpty()) { startBd = parsed.first().bd; endBd = parsed.last().bd }
+                                  saveState(); toast("${parsed.size}개 불러옴"); showSetup()
+                              }
+                          }
+                      } catch (e: Exception) {
+                          runOnUiThread { toast("PDF 읽기 실패: ${e.message}") }
+                      }
+                  }.start()
+              }
+
+              private fun parsePl(text: String): List<Item> {
+                  val re = Regex("""(\d{1,4})\s+([A-Z]{1,3}\d{8,14}D\d{6})\s+\d+\s+([\d,]+)""")
+                  val map = LinkedHashMap<Int, Item>()
+                  for (m in re.findAll(text)) {
+                      val bd = m.groupValues[1].toInt()
+                      if (!map.containsKey(bd))
+                          map[bd] = Item(bd, m.groupValues[2], m.groupValues[3].replace(",", "").toIntOrNull() ?: 0)
+                  }
+                  return map.values.sortedBy { it.bd }
+              }
+
+              private fun setItems(list: List<Item>) {
+                  items = list
+                  byBd = list.associateBy { it.bd }
+                  byCore = list.associateBy { it.core }
+              }
+
+              // ======================= 스캔 화면 =======================
+              private fun showScan() {
+                  if (items.isEmpty() || conts.isEmpty()) { showSetup(); return }
+                  screen = "scan"
+                  val root = FrameLayout(this)
+                  val previewView = PreviewView(this)
+                  root.addView(previewView, FrameLayout.LayoutParams(-1, -1))
+
+                  topPanel = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(12), dp(10), dp(12), dp(10))
+                      setBackgroundColor(Color.argb(190, 0, 0, 0))
+                  }
+                  tvHeader = label("", 26f, bold = true)
+                  tvSub = label("", 20f, Color.YELLOW, true)
+                  slotsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  topPanel.addView(tvHeader); topPanel.addView(tvSub); topPanel.addView(slotsBox)
+                  root.addView(topPanel, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+
+                  val bottom = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(8), dp(8), dp(8), dp(8))
+                      setBackgroundColor(Color.argb(190, 0, 0, 0))
+                  }
+                  tvStatus = label("번호가 보이게 비추면 자동 인식", 19f, Color.WHITE, true).apply { gravity = Gravity.CENTER }
+                  btnTorch = btn("플래시") { toggleTorch() }
+                  btnZoom = btn("줌 1x") { cycleZoom() }
+                  bottom.addView(tvStatus)
+                  bottom.addView(row(btn("되돌리기") { undo() }, btn("번호입력") { manualInput() }, btnTorch, btnZoom))
+                  bottom.addView(row(btn("결과 보기") { showResult() }, btn("설정") { showSetup() }))
+                  root.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+
+                  setContentView(root)
+                  refreshScanUi()
+                  scanning = currentIndex() >= 0
+                  if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
+                      startCamera(previewView)
+                  else {
+                      pendingPreview = previewView
+                      camPerm.launch(Manifest.permission.CAMERA)
+                  }
+              }
+
+              private var pendingPreview: PreviewView? = null
+
+              private fun startCamera(pv: PreviewView? = null) {
+                  val previewView = pv ?: pendingPreview ?: return
+                  val future = ProcessCameraProvider.getInstance(this)
+                  future.addListener({
+                      val p = future.get()
+                      provider = p
+                      val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                      val rs = ResolutionSelector.Builder()
+                          .setResolutionStrategy(
+                              ResolutionStrategy(Size(1920, 1080), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
+                          ).build()
+                      val an = ImageAnalysis.Builder()
+                          .setResolutionSelector(rs)
+                          .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                          .build()
+                      an.setAnalyzer(exec) { proxy -> analyze(proxy) }
+                      analysis = an
+                      try {
+                          p.unbindAll()
+                          camera = p.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, an)
+                          torchOn = false; zoomIdx = 0
+                      } catch (e: Exception) {
+                          toast("카메라 시작 실패: ${e.message}")
+                      }
+                  }, ContextCompat.getMainExecutor(this))
+
+                  if (orientationListener == null) {
+                      orientationListener = object : OrientationEventListener(this) {
+                          override fun onOrientationChanged(o: Int) {
+                              if (o == OrientationEventListener.ORIENTATION_UNKNOWN) return
+                              val r = when (o) {
+                                  in 45 until 135 -> Surface.ROTATION_270
+                                  in 135 until 225 -> Surface.ROTATION_180
+                                  in 225 until 315 -> Surface.ROTATION_90
+                                  else -> Surface.ROTATION_0
+                              }
+                              analysis?.targetRotation = r
+                          }
+                      }
+                  }
+                  orientationListener?.enable()
+              }
+
+              private fun stopCamera() {
+                  scanning = false
+                  orientationListener?.disable()
+                  try { provider?.unbindAll() } catch (e: Exception) { }
+                  camera = null; analysis = null
+              }
+
+              private fun toggleTorch() {
+                  val c = camera ?: return
+                  torchOn = !torchOn
+                  c.cameraControl.enableTorch(torchOn)
+                  btnTorch.text = if (torchOn) "플래시 끔" else "플래시"
+              }
+
+              private fun cycleZoom() {
+                  val c = camera ?: return
+                  zoomIdx = (zoomIdx + 1) % zooms.size
+                  val max = c.cameraInfo.zoomState.value?.maxZoomRatio ?: 1f
+                  val z = minOf(zooms[zoomIdx], max)
+                  c.cameraControl.setZoomRatio(z)
+                  btnZoom.text = "줌 ${z.toInt()}x"
+              }
+
+              @androidx.annotation.OptIn(ExperimentalGetImage::class)
+              private fun analyze(proxy: ImageProxy) {
+                  val media = proxy.image
+                  if (media == null || !scanning) { proxy.close(); return }
+                  val img = InputImage.fromMediaImage(media, proxy.imageInfo.rotationDegrees)
+                  recognizer.process(img)
+                      .addOnSuccessListener { onText(it) }
+                      .addOnCompleteListener { proxy.close() }
+              }
+
+              // ---------- 번호 찾기 ----------
+              private val digitFix = mapOf(
+                  'O' to '0', 'Q' to '0', 'D' to '0', 'U' to '0', 'C' to '0',
+                  'I' to '1', 'L' to '1', '|' to '1', '!' to '1', 'J' to '1',
+                  'Z' to '2', 'S' to '5', 'G' to '6', 'T' to '7', 'B' to '8', 'A' to '4'
+              )
+
+              private fun fixDigit(c: Char): Char? = if (c in '0'..'9') c else digitFix[c]
+
+              /** 날짜8자리 + D + 6자리 (예: 20261122D030016) 형태를 찾아냄 */
+              private fun findCores(raw: String, out: MutableSet<String>) {
+                  val t = raw.uppercase().filter { !it.isWhitespace() && it != '-' && it != '.' && it != '_' }
+                  if (t.length < 15) return
+                  for (i in 0..t.length - 15) {
+                      val sep = t[i + 8]
+                      if (sep != 'D' && sep != 'O' && sep != '0') continue
+                      val sb = StringBuilder(15)
+                      var ok = true
+                      for (k in 0 until 15) {
+                          if (k == 8) { sb.append('D'); continue }
+                          val d = fixDigit(t[i + k])
+                          if (d == null) { ok = false; break }
+                          sb.append(d)
+                      }
+                      if (ok && sb[0] == '2' && sb[1] == '0') out.add(sb.toString())
+                  }
+              }
+
+              private fun onText(vt: Text) {
+                  if (!scanning) return
+                  val cores = HashSet<String>()
+                  for (b in vt.textBlocks) {
+                      findCores(b.text, cores)
+                      for (l in b.lines) findCores(l.text, cores)
+                  }
+                  findCores(vt.text, cores)
+                  val now = SystemClock.elapsedRealtime()
+                  for (c in cores) {
+                      val list = seen.getOrPut(c) { mutableListOf() }
+                      list.add(now)
+                      list.removeAll { now - it > WINDOW_MS }
+                      val item = byCore[c]
+                      val need = if (item != null) CONFIRM else 3
+                      if (list.size >= need) handleConfirmed(c, item)
+                      if (!scanning) return
+                  }
+              }
+
+              private fun handleConfirmed(core: String, item: Item?) {
+                  if (item == null) {
+                      notice("x$core", "⚠ PL에 없는 LOT …$core", Color.rgb(255, 90, 90), error = true)
+                      return
+                  }
+                  val where = conts.indexOfFirst { it.contains(item.bd) }
+                  if (where >= 0) {
+                      notice("d${item.bd}", "이미 스캔됨 #${item.bd} → ${where + 1}번 컨테이너", Color.LTGRAY, error = false, silent = true)
+                      return
+                  }
+                  if (item.bd !in startBd..endBd) {
+                      notice("o${item.bd}", "⚠ 범위 밖 #${item.bd} (지정 #$startBd~#$endBd)", Color.rgb(255, 90, 90), error = true)
+                      return
+                  }
+                  assign(item)
+              }
+
+              private fun notice(key: String, msg: String, color: Int, error: Boolean, silent: Boolean = false) {
+                  val now = SystemClock.elapsedRealtime()
+                  if (now - (lastNotice[key] ?: 0L) < 4000) return
+                  lastNotice[key] = now
+                  tvStatus.text = msg; tvStatus.setTextColor(color)
+                  if (!silent && error) { beep(ToneGenerator.TONE_SUP_ERROR, 400); vib(400) }
+              }
+
+              /** 전체 컨테이너에서 같은 번호가 두 번 이상 있으면 나중 것을 지움. 지운 개수 반환 */
+              private fun dedupe(): Int {
+                  val seenBd = HashSet<Int>()
+                  var removed = 0
+                  for (c in conts) {
+                      val it = c.iterator()
+                      while (it.hasNext()) { if (!seenBd.add(it.next())) { it.remove(); removed++ } }
+                  }
+                  val h = LinkedHashSet(history)
+                  if (h.size != history.size) { history.clear(); history.addAll(h) }
+                  return removed
+              }
+
+              private fun dupCount(): Int { val all = conts.flatten(); return all.size - all.toSet().size }
+
+              private fun currentIndex(): Int = conts.indexOfFirst { it.size < per }
+
+              private fun assign(item: Item) {
+                  // 2차 중복 검사: 기록 직전 전체 컨테이너 + 기록 이력 재확인
+                  if (conts.any { it.contains(item.bd) } || history.contains(item.bd)) {
+                      val w = conts.indexOfFirst { it.contains(item.bd) }
+                      notice("d${item.bd}", "이미 스캔됨 #${item.bd} → ${w + 1}번 컨테이너", Color.LTGRAY, error = false, silent = true)
+                      return
+                  }
+                  val ci = currentIndex()
+                  if (ci < 0) { finishAll(); return }
+                  conts[ci].add(item.bd)
+                  history.add(item.bd)
+                  // 3차 중복 검사: 기록 후 전체 목록 검증
+                  if (dedupe() > 0) {
+                      beep(ToneGenerator.TONE_SUP_ERROR, 400); vib(400)
+                      toast("중복이 발견되어 자동 삭제했습니다")
+                      refreshScanUi(); saveState(); return
+                  }
+                  saveState()
+                  if (conts[ci].size >= per) {
+                      beep(ToneGenerator.TONE_PROP_ACK, 700); vib(700)
+                      tvStatus.setTextColor(Color.rgb(120, 230, 120))
+                      tvStatus.text = "✅ ${ci + 1}번 컨테이너 완료! (#${item.bd})"
+                      flash(Color.argb(220, 0, 120, 255))
+                      refreshScanUi()
+                      if (currentIndex() < 0) finishAll()
+                  } else {
+                      beep(ToneGenerator.TONE_PROP_BEEP, 150); vib(120)
+                      tvStatus.setTextColor(Color.rgb(120, 230, 120))
+                      tvStatus.text = "✔ #${item.bd} 추가  (${ci + 1}번 ${conts[ci].size}/$per)"
+                      flash(Color.argb(220, 0, 150, 60))
+                      refreshScanUi()
+                  }
+              }
+
+              private fun flash(c: Int) {
+                  topPanel.setBackgroundColor(c)
+                  topPanel.postDelayed({ topPanel.setBackgroundColor(Color.argb(190, 0, 0, 0)) }, 300)
+              }
+
+              private fun finishAll() {
+                  scanning = false
+                  refreshScanUi()
+                  AlertDialog.Builder(this)
+                      .setTitle("탈리 완료")
+                      .setMessage("컨테이너 ${nCont}대 모두 채웠습니다.")
+                      .setPositiveButton("결과 보기") { _, _ -> showResult() }
+                      .setNegativeButton("닫기", null)
+                      .show()
+              }
+
+              private fun undo() {
+                  if (history.isEmpty()) { toast("되돌릴 기록 없음"); return }
+                  val bd = history.removeAt(history.lastIndex)
+                  conts.forEach { it.remove(bd) }
+                  lastNotice.clear(); seen.clear()
+                  saveState()
+                  scanning = true
+                  tvStatus.setTextColor(Color.YELLOW)
+                  tvStatus.text = "↩ #$bd 취소됨"
+                  refreshScanUi()
+              }
+
+              private fun manualInput() {
+                  val e = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; hint = "B/D 번호" }
+                  AlertDialog.Builder(this).setTitle("번호 직접 입력").setView(e)
+                      .setPositiveButton("추가") { _, _ ->
+                          val bd = e.text.toString().toIntOrNull()
+                          val item = bd?.let { byBd[it] }
+                          when {
+                              item == null -> toast("PL에 없는 번호")
+                              conts.any { it.contains(item.bd) } -> toast("이미 스캔된 번호")
+                              item.bd !in startBd..endBd -> toast("범위 밖 번호")
+                              currentIndex() < 0 -> toast("모든 컨테이너가 찼습니다")
+                              else -> assign(item)
+                          }
+                      }
+                      .setNegativeButton("취소", null).show()
+              }
+
+              private fun refreshScanUi() {
+                  if (screen != "scan") return
+                  val ci = currentIndex()
+                  val done = conts.sumOf { it.size }
+                  val showIdx = if (ci >= 0) ci else conts.lastIndex
+                  tvHeader.text = if (ci >= 0) "${ci + 1}번 컨테이너  (${ci + 1}/$nCont)" else "전체 완료 ($nCont/$nCont)"
+                  tvSub.text = "볼 번호: #$startBd ~ #$endBd   (전체 $done/${nCont * per})"
+                  slotsBox.removeAllViews()
+                  val list = conts.getOrNull(showIdx) ?: return
+                  for (k in 0 until per) {
+                      val bd = list.getOrNull(k)
+                      val it = bd?.let { b -> byBd[b] }
+                      val tv = if (it != null)
+                          label("${k + 1}) #${it.bd}   …${it.core.takeLast(10)}   ${fmt(it.kg)}kg", 18f, Color.WHITE, true)
+                      else label("${k + 1}) ─", 18f, Color.GRAY)
+                      slotsBox.addView(tv)
+                  }
+              }
+
+              private fun beep(t: Int, ms: Int) { try { tone?.startTone(t, ms) } catch (e: Exception) { } }
+
+              @Suppress("DEPRECATION")
+              private fun vib(ms: Int) {
+                  try {
+                      val v = getSystemService(VIBRATOR_SERVICE) as? Vibrator ?: return
+                      if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createOneShot(ms.toLong(), VibrationEffect.DEFAULT_AMPLITUDE))
+                      else v.vibrate(ms.toLong())
+                  } catch (e: Exception) { }
+              }
+
+              // ======================= 결과 화면 =======================
+              private fun showResult() {
+                  stopCamera()
+                  screen = "result"
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(16), dp(16), dp(16))
+                  }
+                  val done = conts.sumOf { it.size }
+                  val totalKg = conts.flatten().sumOf { byBd[it]?.kg ?: 0 }
+                  root.addView(label("탈리 결과", 24f, bold = true))
+                  root.addView(label("$plName\n범위 #$startBd~#$endBd · ${done}/${nCont * per}개 · ${fmt(totalKg)}kg", 14f, Color.LTGRAY))
+                  val dups = dupCount()
+                  root.addView(
+                      if (dups == 0) label("중복 검사: 이상 없음 ✔", 17f, Color.rgb(120, 230, 120), true)
+                      else label("⚠ 중복 ${dups}건 발견", 17f, Color.rgb(255, 90, 90), true)
+                  )
+                  root.addView(row(btn("엑셀(CSV) 공유") { shareCsv() }, btn("문자 공유") { shareText() }))
+
+                  conts.forEachIndexed { i, list ->
+                      val kg = list.sumOf { byBd[it]?.kg ?: 0 }
+                      root.addView(label("■ ${i + 1}번 컨테이너   ${list.size}/$per   ${fmt(kg)}kg", 19f, Color.rgb(120, 200, 255), true))
+                      val eNo = EditText(this).apply {
+                          hint = "컨테이너 번호 입력"; setText(contNos.getOrElse(i) { "" })
+                          setTextColor(Color.WHITE); setHintTextColor(Color.GRAY); textSize = 16f
+                          inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                          addTextChangedListener(watcher { contNos[i] = text.toString().trim(); saveState() })
+                      }
+                      root.addView(eNo)
+                      list.forEachIndexed { k, bd ->
+                          val it = byBd[bd]
+                          val tv = label("  ${k + 1}) #$bd   ${it?.lot ?: ""}   ${fmt(it?.kg ?: 0)}kg", 15f)
+                          tv.setOnClickListener {
+                              AlertDialog.Builder(this).setMessage("#$bd 를 ${i + 1}번 컨테이너에서 뺄까요?")
+                                  .setPositiveButton("빼기") { _, _ ->
+                                      list.remove(bd); history.remove(bd); saveState(); showResult()
+                                  }.setNegativeButton("취소", null).show()
+                          }
+                          root.addView(tv)
+                      }
+                  }
+                  val missing = items.filter { it.bd in startBd..endBd && conts.none { c -> c.contains(it.bd) } }
+                  if (missing.isNotEmpty()) {
+                      root.addView(label("미스캔 ${missing.size}개", 18f, Color.rgb(255, 120, 120), true))
+                      root.addView(label(missing.joinToString(", ") { "#${it.bd}" }, 15f, Color.rgb(255, 170, 170)))
+                  }
+                  root.addView(row(btn("스캔 계속") { showScan() }, btn("처음 화면") { showSetup() }))
+                  setContentView(ScrollView(this).apply {
+                      setBackgroundColor(Color.rgb(24, 24, 28)); addView(root)
+                  })
+              }
+
+              private fun buildText(): String {
+                  val sb = StringBuilder()
+                  sb.append("탈리 $plName\n범위 #$startBd~#$endBd\n")
+                  conts.forEachIndexed { i, list ->
+                      val kg = list.sumOf { byBd[it]?.kg ?: 0 }
+                      sb.append("\n[${i + 1}] ${contNos.getOrElse(i) { "" }}  ${list.size}개 ${fmt(kg)}kg\n")
+                      list.forEach { bd -> val it = byBd[bd]; sb.append("#$bd ${it?.lot ?: ""} ${it?.kg ?: 0}\n") }
+                  }
+                  return sb.toString()
+              }
+
+              private fun shareText() {
+                  val i = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, buildText()) }
+                  startActivity(Intent.createChooser(i, "공유"))
+              }
+
+              private fun shareCsv() {
+                  val sb = StringBuilder("﻿")
+                  sb.append("컨테이너,컨테이너번호,순번,B/D_NO,LOT NO,N/W(KG)\n")
+                  conts.forEachIndexed { i, list ->
+                      list.forEachIndexed { k, bd ->
+                          val it = byBd[bd]
+                          sb.append("${i + 1},${contNos.getOrElse(i) { "" }},${k + 1},$bd,${it?.lot ?: ""},${it?.kg ?: 0}\n")
+                      }
+                  }
+                  val base = plName.substringBeforeLast('.').replace(Regex("[^0-9A-Za-z가-힣_.-]"), "_").take(60)
+                  val f = File(cacheDir, "tally_$base.csv")
+                  f.writeText(sb.toString(), Charsets.UTF_8)
+                  val uri = FileProvider.getUriForFile(this, "com.nakyung.tally.files", f)
+                  val i = Intent(Intent.ACTION_SEND).apply {
+                      type = "text/csv"; putExtra(Intent.EXTRA_STREAM, uri)
+                      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                  }
+                  startActivity(Intent.createChooser(i, "CSV 공유"))
+              }
+
+              // ======================= 저장 =======================
+              private fun saveState() {
+                  val o = JSONObject()
+                  o.put("pl", plName); o.put("start", startBd); o.put("end", endBd)
+                  o.put("n", nCont); o.put("per", per)
+                  o.put("items", JSONArray(items.map { "${it.bd}|${it.lot}|${it.kg}" }))
+                  val ca = JSONArray(); conts.forEach { ca.put(JSONArray(it)) }
+                  o.put("conts", ca)
+                  o.put("nos", JSONArray(contNos))
+                  o.put("hist", JSONArray(history))
+                  getSharedPreferences("tally", MODE_PRIVATE).edit().putString("s", o.toString()).apply()
+              }
+
+              private fun loadState() {
+                  val s = getSharedPreferences("tally", MODE_PRIVATE).getString("s", null) ?: return
+                  try {
+                      val o = JSONObject(s)
+                      plName = o.optString("pl")
+                      startBd = o.optInt("start", 1); endBd = o.optInt("end", 1)
+                      nCont = o.optInt("n", 1); per = o.optInt("per", 5)
+                      val ia = o.getJSONArray("items")
+                      val list = ArrayList<Item>()
+                      for (i in 0 until ia.length()) {
+                          val p = ia.getString(i).split("|")
+                          if (p.size == 3) list.add(Item(p[0].toInt(), p[1], p[2].toInt()))
+                      }
+                      setItems(list)
+                      val ca = o.getJSONArray("conts")
+                      conts = MutableList(ca.length()) { i ->
+                          val a = ca.getJSONArray(i); MutableList(a.length()) { a.getInt(it) }
+                      }
+                      val na = o.getJSONArray("nos")
+                      contNos = MutableList(conts.size) { if (it < na.length()) na.getString(it) else "" }
+                      val ha = o.getJSONArray("hist")
+                      history.clear(); for (i in 0 until ha.length()) history.add(ha.getInt(i))
+                      if (dedupe() > 0) saveState()
+                  } catch (e: Exception) { }
+              }
+          }
+          TALLY_EOF
+          echo "MIIJ8gIBAzCCCZwGCSqGSIb3DQEHAaCCCY0EggmJMIIJhTCCBawGCSqGSIb3DQEHAaCCBZ0EggWZMIIFlTCCBZEGCyqGSIb3DQEMCgECoIIFQDCCBTwwZgYJKoZIhvcNAQUNMFkwOAYJKoZIhvcNAQUMMCsEFHSODJ5O4+XvABOm4aFEVhB/Dx/tAgInEAIBIDAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQ2Yda/Js4TLUO8Hq7cp3iIgSCBNAggxv6UtVHHvbfFF7yQ6GlGody7K4Sd1zuiSwVgzKfahrLBnTkxNB+gD//f2c5l1+mrpuMVF1/rou9N1izJaS0SgO0ktdMSeA8Dno9F9LiTfOQYR8xSK3wqhJySLtRdE4CvLpTaNywk5eEpX0cEKiP9cDWNVgpdwpTlWWoQKK0X6Wx5/ho0z/Kts5VpCGzFXN3t07NFq+LQXbaJJwthWlLaJ5koCJOZqULG6uBu7tukHa2UFUub0MYiE81gUIfcsad2u339ypc5yFkZ2QOJ/yk9UaScoQEJ72I/8fOmadxoZFL60UZQdFs5W9zC2VqExu6ZWwcK3UtjY7B278wf2I5QZ6bbJvr8StsJa+R7S7r4zbevh2MlBpnaK8cnPO2Hc9kRA+WqwZ/5uF675uKRjH6k2k1+78jsdk4yKrMOqNNo6Hj5adpHWEv2K5HA2XmAuzk20o3Ve9pXEN9buTCw/0X0wu/iM4fGvrsE1FY12C/0HbEbbuGcKPz2ztit7A4xAZh3XLXiKkxm9pQXzKs9sPaIxC5IYHmsOJFPLV2OHXDPP3CmOQ2NQnoWC3ujzrON1oZp5wslbhxrubPJGoLTXTivM4HfEp1FcT8cwxvFYrhSw1V+yA3CNlSvWshmDUlEENyWj6Bc/k43KoNx1do7z7if+2ukIhbBC5M88CXz+X29ii3O16/oYFYNo2mbSlePQaoTWajqIA8uGgTDsnnb0AEjBS7CENeH+WOxidlDSuZcSie8bZ302/G45MJnvy0NWv08dB9FcesJZtToymVtcYEXOAtk6Zcr8RDkKhfz5sHH40KEZVYhvUoIawQCSmH1bgGjNBsAqk7f9G5qzBwZBsWdgrN9iT+SerwAFYzI/za8UDPLfI7tJd1YY25nn5KmJPwLMsIBDE0S2vJtRIr37JvH87A8zHuN9vEccIw51YVJ3BgJQ7iF7xOr4QnCMUzQmVB6YyiP1M1Na2Rx1O+PLbBwgku5qhuLTZyqFR6KlJMQec9k19Z07iC0AUUEraKr6LN4kfh4esxluPM61hlixjL8+h/CkZCRnpB2MTaZpBob3RR5urMtW8CsAlwYJBy7walqT5eCQi0zNm4bKVjp+jg6WMyo+o7vLMeJVqK6shpoDJjsekKoJsmUHAOqF0KxwpPeQjtjdfBjzfZbYMhlZZ0htSwuTRiyB6kur24AS6G+uD6BERZkid9XkLN5V//DT1sAWpvhqNg9Eax4wI5CqwT8p+AokL7qo66/X3God0RPQaplQOuif3tPSworObpZ2riGqpQsJEd9Nt2ptMUyf4zjWMH8AsJsXNJPVgadyAC2NEqpyDBjRhAZGvxEeoW+1RlPW1rEEIOFwQur/7ByjnhlHy76wRnQ9zABXWCgdpuUmqHlV+6h65CsoEHyzAEThBblOWN+lHMtHj+Xsm4+hVtLbujZQXn5tkHVJwX5TnWsxqoAumvfIwGTHHwtvCwcLMLAHA8bw+uSNxriV7ljZdBgBxLntewD+dd37r7YYX6rALVib+T9S9N5HPfQ55DHhaUm5+u5amPED6vbhoNDefPc/A2I4bKvRsTYqpQRcBuTGZzAEKENBeBwi+bHzgR3DxYCf9OhiY5rHWya4nETvzSbuIJuN6+1obs6SZoH610azE+MBkGCSqGSIb3DQEJFDEMHgoAdABhAGwAbAB5MCEGCSqGSIb3DQEJFTEUBBJUaW1lIDE3OTU1ODI0MjUwNjgwggPRBgkqhkiG9w0BBwagggPCMIIDvgIBADCCA7cGCSqGSIb3DQEHATBmBgkqhkiG9w0BBQ0wWTA4BgkqhkiG9w0BBQwwKwQUKTy9xVGAXUY1RPI/s7LCuHBmY1gCAicQAgEgMAwGCCqGSIb3DQIJBQAwHQYJYIZIAWUDBAEqBBC2GaCqBuIsn4LPr07Fk+DCgIIDQG1OddPIJ1jIJtvLLRvUS2CAk5u1Eka1tH6OZVShRL1uCf/S3eMhMjvUc/cMpT+nJrpFbEs9yKiiUhindUoZ5TDaueAglitJv7a7DmN6kVcPLnV10DRArAa6Sb82E14W8TScs4gktnp25pVAMIU7txhYN/kglOvcCCmMRT5NvZ1tnuvLP3ZZ8PjUL2NU9dyhnf10rXm01QjVecr9I/5T22ZkKBcQ+7nVopoo8u4YcGNxIRjlQtF8cvE6jNQxR59mbckLvkO26BmeL6omG9+mWZ1sFcd168lGvi7LakRPy9w6o+IEnDqd1GUAVWQw+1JfQdzoo/jch5MVfTux/Pl/weFg3BfODCvmcT0qZw+XYB2aE7U5Znvn7yrpwbDFAhGNrOlxVrRq+d38dhGdcu1c/XvWIroGfTTBSqDaTjdBZSkBsrao9wwhiHJQhnJXoOr8mKVynBe5Lzqkpk63KhM9Id/U3p+n7hWYBr1btXH10FNTjkga0FMVX/ijtD1PQBXEmPb3v8GdPH0JZqFL+yXpga2BIHFAG06lLIr6xhJt+CV245ctd2Fq1qtHuqYso1+eROCB9K7wUsaUPk1V2+QwVvBKR6a2swPLOi9fRoDDAsyKBbbD5BuXgQ5Xy0zRiwQwL0Hf8U3tQEMCfsq0QCXESKeeToFxfNrbNsbXpndlwe4HD6QM4NFzmIzVScGLBDZmgOJi0g4Omjy6L9koo7FeTWlK78tz3qFqycSXpybFB//PhR5TVqvSTeWGZeNyrEEb9mRM/b/7/oRenCb+rTrZ+VpSvkO5jhxVXkDP2grvfzQJ9bbKmZsj8nm2Co8uGIP5V24Ik9pFp322larv5Zwn2LyqvqfZhjhpueHDlEAPvpu5S8ZULDHuOayUPBdhgNLzacHeCWLkxaIEC62tDFfuyRywrNOSTH/kPAEJcri4ziToErFXWaJgfdHP4MC6wNzTgL8XZ7A50IGA335/+8Pzo26sJCRgcFB3ACBU8RMcr+NL/P2Z1NEzTtAz1o++88CyOmideeMSb+xoXsQYr4VdYe45vxjCgARy4qcFHmDWYw3xjBlriygzzRdpW/UwtlF5j5OKWU1TaG2bcbTiqYz/IjUwTTAxMA0GCWCGSAFlAwQCAQUABCCTU++Uwl/IZZBrh3MUd8+4ChBk9QENqI7/ZG+X6ppIxgQUyF/2twF5Cub7uKcG0EN+RUZNLtYCAicQ" | base64 -d > app/tally.jks
+
+      - name: Build APK
+        working-directory: proj
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tally-APK
+          path: proj/app/build/outputs/apk/release/*.apk
