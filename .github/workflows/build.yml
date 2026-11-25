@@ -529,6 +529,7 @@ jobs:
                       cd.addView(label("PL ${b.items.size}개 · ${fmt(b.items.sumOf { it.gw })}kg", 14f, SUB))
                       cd.addView(label(if (c > 0) "🚛 컨테이너 ${c}대 · ${clists[b.coa]?.carrier ?: ""}" else "🚛 컨테이너 목록 없음", 15f,
                           if (c > 0) Color.WHITE else GOLD))
+                      clists[b.coa]?.let { cl -> cd.addView(label(cl.conts.joinToString("  ") { it.cntr }, 13f, BLUE)) }
                       val rtxt = if (r != null) "🎯 범위 #${r[0]} ~ #${r[1]}  →  ${rc}개" + (if (c > 0) " / ${c}대×$per=${c * per}" + (if (rc == c * per) " ✔" else " ⚠") else "")
                                  else "🎯 범위 미지정"
                       cd.addView(label(rtxt, 15f, if (r != null && (c == 0 || rc == c * per)) GREEN else GOLD, true))
@@ -1402,7 +1403,31 @@ jobs:
                               saveState()
                           })
                           gc.addView(e); gc.addView(st)
+                          val list = clists[b.coa]?.conts ?: emptyList()
+                          if (list.isNotEmpty()) gc.addView(btn("📋 목록에서 고르기") {
+                              val free = list.filter { c -> groups.none { it !== g && it.coa == b.coa && it.cntr == c.cntr } }
+                              AlertDialog.Builder(this).setTitle("${groupLabel(g)} 컨테이너")
+                                  .setItems(free.map { "${it.cntr}   씰 ${it.seal}   ${it.tare}" }.toTypedArray()) { _, w ->
+                                      g.cntr = free[w].cntr; saveState(); showResult()
+                                  }.setNegativeButton("취소", null).show()
+                          })
                           cd.addView(gc)
+                      }
+
+                      val cl = clists[b.coa]
+                      if (cl != null) {
+                          val used = gs.count { it.cntr.isNotEmpty() }
+                          cd.addView(section("컨테이너 목록 (${cl.conts.size}대 · 지정 $used)"))
+                          for ((ci, c) in cl.conts.withIndex()) {
+                              val g = gs.firstOrNull { it.cntr == c.cntr }
+                              val line = label("${ci + 1}. ${c.cntr}   씰 ${c.seal}   ${c.tare}\n      " +
+                                      (if (g != null) "→ ${gs.indexOf(g) + 1}묶음 ✔" else "미지정"), 14f,
+                                  if (g != null) GREEN else Color.WHITE, g != null)
+                              line.background = round(if (g != null) Color.argb(90, 16, 170, 150) else FIELD, 10)
+                              line.setPadding(dp(10), dp(6), dp(10), dp(6))
+                              line.layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(2), 0, dp(2)) }
+                              cd.addView(line)
+                          }
                       }
 
                       val r = ranges[b.coa]
