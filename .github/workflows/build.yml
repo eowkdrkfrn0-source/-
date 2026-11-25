@@ -367,7 +367,7 @@ jobs:
                       }
                   })
                   if (ctrlPrefs.getBoolean("killed", false)) { killApp(ctrlPrefs.getString("msg", "") ?: ""); checkControl(); return }
-                  if (savedInstanceState == null) showSplash { showSetup(); handleIncoming(intent); checkControl() }
+                  if (savedInstanceState == null) showSplash { showChecking(); gate { showSetup(); handleIncoming(intent) } }
                   else { showSetup(); handleIncoming(intent) }
               }
 
@@ -386,7 +386,7 @@ jobs:
                   if (killed) return
                   val r = newRelease
                   if (r != null && r.build > BuildInfo.BUILD && screen != "splash") showForceUpdate(r)
-                  else if (screen != "splash") { checkUpdate(silent = true); checkControl() }
+                  else if (screen != "splash" && screen != "checking") gate { }
               }
 
               override fun onDestroy() {
@@ -570,7 +570,7 @@ jobs:
                       if (r.build > BuildInfo.BUILD)
                           root.addView(btn("🔄  새 버전 ${r.build} 있음 → 업데이트", Color.rgb(200, 90, 20)) { startUpdate(r) })
                   }
-                  if (!updateChecked) { updateChecked = true; checkUpdate(silent = true) }
+
                   root.addView(btn("📂  최근 파일에서 불러오기", PRIMARY) { openRecent() })
                   root.addView(btn("파일 직접 선택") { pickFiles.launch(arrayOf("*/*")) })
 
@@ -1699,6 +1699,69 @@ jobs:
               // ---------- 원격 사용 중지 (저장소의 control.txt 첫 줄이 STOP 이면) ----------
               private val ctrlPrefs by lazy { getSharedPreferences("ctrl", MODE_PRIVATE) }
               private var killed = false
+
+              // ---------- 인터넷 필수: 켤 때·돌아올 때마다 서버 확인 ----------
+              private var offlineDlg: AlertDialog? = null
+              private var gating = false
+
+              private fun showChecking() {
+                  screen = "checking"
+                  setContentView(LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setBackgroundColor(BG)
+                      addView(label("고려아연 TALLY", 24f, Color.WHITE, true).apply { gravity = Gravity.CENTER })
+                      addView(label("연결 확인 중…", 15f, SUB).apply { gravity = Gravity.CENTER })
+                  })
+              }
+
+              /** 서버(깃허브)에 연결되면 사용 중지·업데이트를 확인하고 onOk, 안 되면 사용 불가 창 */
+              private fun gate(onOk: () -> Unit) {
+                  if (gating || killed) return
+                  gating = true
+                  Thread {
+                      var online = false
+                      var stop = false
+                      var msg = ""
+                      var rel: Release? = null
+                      try {
+                          val c = java.net.URL("https://raw.githubusercontent.com/${upRepo()}/main/control.txt?t=${System.currentTimeMillis()}")
+                              .openConnection() as java.net.HttpURLConnection
+                          c.connectTimeout = 8000; c.readTimeout = 8000
+                          c.setRequestProperty("Cache-Control", "no-cache")
+                          val code = c.responseCode
+                          online = true
+                          if (code == 200) {
+                              val lines = c.inputStream.bufferedReader().use { it.readText() }.trim().lines()
+                              stop = lines.firstOrNull()?.trim()?.uppercase() == "STOP"
+                              msg = lines.drop(1).joinToString("\n").trim()
+                          }
+                      } catch (e: Exception) { }
+                      if (online) try { rel = Updater.latest(upRepo(), upToken()) } catch (e: Exception) { }
+                      runOnUiThread {
+                          gating = false
+                          if (!online) { showOffline(onOk); return@runOnUiThread }
+                          offlineDlg?.dismiss()
+                          if (screen == "scan" && !testMode) scanning = true
+                          if (stop) { killApp(msg); return@runOnUiThread }
+                          if (ctrlPrefs.getBoolean("killed", false)) ctrlPrefs.edit().putBoolean("killed", false).apply()
+                          updateChecked = true
+                          newRelease = rel
+                          onOk()
+                          val r = rel
+                          if (r != null && r.build > BuildInfo.BUILD) showForceUpdate(r)
+                      }
+                  }.start()
+              }
+
+              private fun showOffline(onOk: () -> Unit) {
+                  scanning = false
+                  if (offlineDlg?.isShowing == true) return
+                  offlineDlg = AlertDialog.Builder(this).setTitle("인터넷 연결 필요")
+                      .setMessage("인터넷에 연결되어 있어야 사용할 수 있어요.\n와이파이나 데이터를 켜고 다시 시도하세요.\n(작업 기록은 그대로 저장되어 있어요)")
+                      .setCancelable(false)
+                      .setPositiveButton("다시 시도") { _, _ -> gate(onOk) }
+                      .setNegativeButton("종료") { _, _ -> saveState(); finishAndRemoveTask() }
+                      .show()
+              }
 
               private fun checkControl() {
                   Thread {
