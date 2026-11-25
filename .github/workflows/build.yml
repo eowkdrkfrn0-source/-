@@ -369,68 +369,6 @@ jobs:
               }
 
               // ======================= 시작 화면 (JJ) =======================
-              private fun showSplash(next: () -> Unit) {
-                  screen = "splash"
-                  val navy = Color.rgb(12, 16, 32)
-                  val teal = Color.rgb(20, 210, 185)
-                  val sw = resources.displayMetrics.widthPixels.toFloat()
-                  var done = false
-                  val go = { if (!done) { done = true; next() } }
-
-                  val root = FrameLayout(this).apply { setBackgroundColor(navy) }
-                  val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-                  val face = Typeface.create("sans-serif-black", Typeface.BOLD_ITALIC)
-                  fun jView(color: Int) = TextView(this).apply {
-                      text = "J"; textSize = 128f; setTextColor(color); typeface = face
-                      includeFontPadding = false
-                      setShadowLayer(1f, 0f, 0f, teal)
-                  }
-                  val j1 = jView(Color.WHITE)
-                  val j2 = jView(teal)
-                  val jRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-                  jRow.addView(j1)
-                  jRow.addView(j2, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = -dp(26) })
-                  box.addView(jRow)
-                  val line = View(this).apply { background = round(teal, 2); scaleX = 0f }
-                  box.addView(line, LinearLayout.LayoutParams(dp(290), dp(4)).apply { topMargin = dp(26) })
-                  val t1 = TextView(this).apply {
-                      text = "고려아연 TALLY"; textSize = 28f; setTextColor(Color.WHITE); letterSpacing = 0.08f
-                      setTypeface(typeface, Typeface.BOLD); alpha = 0f; gravity = Gravity.CENTER
-                  }
-                  val t2 = TextView(this).apply {
-                      text = "CONTAINER TALLY"; textSize = 13f; setTextColor(teal); letterSpacing = 0.35f; setTypeface(typeface, Typeface.BOLD)
-                      alpha = 0f; gravity = Gravity.CENTER
-                  }
-                  box.addView(t1, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(14) })
-                  box.addView(t2, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) })
-                  root.addView(box, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
-                  root.setOnClickListener { go() }
-                  setContentView(root)
-
-                  val dec = android.view.animation.DecelerateInterpolator(2.2f)
-                  j1.translationX = -sw; j1.alpha = 0f
-                  j2.translationX = sw; j2.alpha = 0f
-                  j1.animate().translationX(0f).alpha(1f).setDuration(650).setInterpolator(dec).start()
-                  j2.animate().translationX(0f).alpha(1f).setStartDelay(180).setDuration(650).setInterpolator(dec).start()
-                  android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
-                      startDelay = 600; duration = 900
-                      addUpdateListener { a ->
-                          val v = a.animatedValue as Float
-                          val r = 6f + 44f * Math.sin(Math.PI * v).toFloat() + 14f * v
-                          j1.setShadowLayer(r, 0f, 0f, teal); j2.setShadowLayer(r, 0f, 0f, teal)
-                      }
-                      start()
-                  }
-                  // 반짝임: 살짝 커졌다 돌아오기
-                  jRow.animate().scaleX(1.06f).scaleY(1.06f).setStartDelay(900).setDuration(220).withEndAction {
-                      jRow.animate().scaleX(1f).scaleY(1f).setDuration(260).start()
-                  }.start()
-                  line.animate().scaleX(1f).setStartDelay(950).setDuration(520).setInterpolator(dec).start()
-                  t1.animate().alpha(1f).setStartDelay(1250).setDuration(500).start()
-                  t2.animate().alpha(1f).setStartDelay(1400).setDuration(500).start()
-                  root.postDelayed({ go() }, 2500)
-              }
-
               override fun onNewIntent(intent: Intent) {
                   super.onNewIntent(intent)
                   setIntent(intent)
@@ -449,6 +387,15 @@ jobs:
                   orientationListener?.disable()
                   tone?.release()
                   exec.shutdown()
+              }
+
+              private fun showSplash(next: () -> Unit) {
+                  screen = "splash"
+                  var done = false
+                  val go = { if (!done) { done = true; next() } }
+                  val v = SplashView(this) { go() }
+                  v.setOnClickListener { go() }
+                  setContentView(v)
               }
 
               // ======================= UI 헬퍼 =======================
@@ -2239,6 +2186,284 @@ jobs:
                               }
                           }
                       }
+                  }
+              }
+          }
+          TALLY_EOF
+          mkdir -p "app/src/main/java/com/nakyung/tally"
+          cat > 'app/src/main/java/com/nakyung/tally/SplashView.kt' <<'TALLY_EOF'
+          package com.nakyung.tally
+
+          import android.animation.Animator
+          import android.animation.AnimatorListenerAdapter
+          import android.animation.ValueAnimator
+          import android.content.Context
+          import android.graphics.BlurMaskFilter
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Paint
+          import android.graphics.Path
+          import android.graphics.Typeface
+          import android.view.View
+          import android.view.animation.LinearInterpolator
+          import kotlin.math.abs
+          import kotlin.math.cos
+          import kotlin.math.floor
+          import kotlin.math.max
+          import kotlin.math.sin
+
+          /**
+           * 고려아연 TALLY 시작 화면 (실제 컨테이너 문 고증)
+           * 닫힌 문(가로 골판·로킹바 4개·캠키퍼·경첩·표기) → 오른쪽 문 손잡이 돌림 → 오른쪽 문 열림
+           * → 왼쪽 문 손잡이 → 왼쪽 문 열림 → 안쪽(골판 벽·나무 바닥) → 안쪽 벽 네온 JJ → 줌인 → 네온 글자
+           */
+          class SplashView(ctx: Context, private val onDone: () -> Unit) : View(ctx) {
+
+              private var t = 0f
+              private val pink = Color.rgb(255, 60, 170)
+              private val cyan = Color.rgb(40, 230, 255)
+              private val ORG = Color.rgb(204, 92, 28)
+              private val ORG_D = Color.rgb(170, 72, 20)
+              private val ORG_L = Color.rgb(226, 118, 48)
+              private val STEEL = Color.rgb(196, 198, 204)
+              private val STEEL_D = Color.rgb(130, 132, 140)
+              private val heavy: Typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
+
+              // 장면 좌표 (가로 360 기준)
+              private val X0 = 14f; private val X1 = 346f; private val Y0 = 150f; private val Y1 = 502f
+              private val OX0 = 36f; private val OX1 = 324f; private val OY0 = 176f; private val OY1 = 484f
+              private val DW = (OX1 - OX0) / 2
+              private val BX0 = 118f; private val BX1 = 242f; private val BY0 = 268f; private val BY1 = 382f
+              private val FOC = 420f
+
+              private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val path = Path()
+              private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
+              private val jPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = heavy; textSkewX = -0.22f; style = Paint.Style.STROKE }
+              private val tGlow = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = heavy; color = cyan }
+              private val tFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = heavy; color = Color.rgb(225, 250, 255) }
+              private val sPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD; color = cyan; letterSpacing = 0.35f }
+
+              private var u = 1f; private var dy = 0f; private var z = 1f
+              private val zcx = (BX0 + BX1) / 2; private val zcy = (BY0 + BY1) / 2
+
+              private val anim = ValueAnimator.ofFloat(0f, 1f).apply {
+                  duration = 4200
+                  interpolator = LinearInterpolator()
+                  addUpdateListener { a -> t = a.animatedValue as Float; invalidate() }
+                  addListener(object : AnimatorListenerAdapter() {
+                      override fun onAnimationEnd(animation: Animator) { postDelayed({ onDone() }, 700) }
+                  })
+              }
+
+              init { setLayerType(LAYER_TYPE_SOFTWARE, null) }
+
+              override fun onAttachedToWindow() { super.onAttachedToWindow(); anim.start() }
+              override fun onDetachedFromWindow() { anim.cancel(); super.onDetachedFromWindow() }
+
+              private fun cl(x: Float) = x.coerceIn(0f, 1f)
+              private fun eio(x: Float): Float { val v = cl(x); return v * v * (3 - 2 * v) }
+              private fun flick(i: Int): Float { val v = sin(i * 12.9898f + 78.233f) * 43758.547f; return v - floor(v) }
+              private fun shadeC(c: Int, s: Float) = Color.rgb((Color.red(c) * s).toInt(), (Color.green(c) * s).toInt(), (Color.blue(c) * s).toInt())
+
+              private fun px(x: Float) = (zcx + (x - zcx) * z) * u
+              private fun py(y: Float) = (zcy + (y - zcy) * z) * u + dy
+
+              private fun poly(c: Canvas, color: Int, vararg pts: Float) {
+                  path.reset()
+                  path.moveTo(px(pts[0]), py(pts[1]))
+                  var i = 2
+                  while (i < pts.size) { path.lineTo(px(pts[i]), py(pts[i + 1])); i += 2 }
+                  path.close()
+                  p.style = Paint.Style.FILL; p.maskFilter = null; p.color = color
+                  c.drawPath(path, p)
+              }
+
+              private fun rect(c: Canvas, color: Int, x0: Float, y0: Float, x1: Float, y1: Float) =
+                  poly(c, color, x0, y0, x1, y0, x1, y1, x0, y1)
+
+              private fun line(c: Canvas, color: Int, w: Float, x0: Float, y0: Float, x1: Float, y1: Float) {
+                  p.style = Paint.Style.STROKE; p.maskFilter = null; p.color = color; p.strokeWidth = w * u * z
+                  p.strokeCap = Paint.Cap.BUTT
+                  c.drawLine(px(x0), py(y0), px(x1), py(y1), p)
+                  p.style = Paint.Style.FILL
+              }
+
+              override fun onDraw(c: Canvas) {
+                  val w = width.toFloat(); val h = height.toFloat()
+                  u = w / 360f
+                  dy = (h - 640f * u) / 2f
+                  z = 1f + 1.35f * eio((t - 0.62f) / 0.2f)
+
+                  c.drawColor(Color.rgb(10, 12, 20))
+                  p.color = Color.rgb(26, 26, 30); p.style = Paint.Style.FILL; p.maskFilter = null
+                  val gy = py(Y1)
+                  if (gy < h) c.drawRect(0f, gy, w, h, p)
+
+                  // ---- 안쪽 ----
+                  rect(c, Color.rgb(18, 18, 24), OX0, OY0, OX1, OY1)
+                  poly(c, Color.rgb(24, 24, 30), OX0, OY0, OX1, OY0, BX1, BY0, BX0, BY0)
+                  poly(c, Color.rgb(92, 62, 38), OX0, OY1, OX1, OY1, BX1, BY1, BX0, BY1)
+                  for (k in 1..8) {
+                      val f = k / 9f
+                      line(c, Color.rgb(70, 46, 28), 1f, OX0 + (OX1 - OX0) * f, OY1, BX0 + (BX1 - BX0) * f, BY1)
+                  }
+                  for (side in 0..1) {
+                      val ox = if (side == 0) OX0 else OX1
+                      val bx = if (side == 0) BX0 else BX1
+                      poly(c, Color.rgb(34, 36, 44), ox, OY0, bx, BY0, bx, BY1, ox, OY1)
+                      for (k in 1..13) {
+                          val kk = 1f - Math.pow((1f - k / 14f).toDouble(), 1.6).toFloat()
+                          val ax = ox + (bx - ox) * kk; val ay0 = OY0 + (BY0 - OY0) * kk; val ay1 = OY1 + (BY1 - OY1) * kk
+                          line(c, if (k % 2 == 1) Color.rgb(46, 48, 58) else Color.rgb(26, 28, 34), max(0.5f, 2f * (1 - kk)), ax, ay0, ax, ay1)
+                      }
+                  }
+                  rect(c, Color.rgb(20, 20, 28), BX0, BY0, BX1, BY1)
+                  for (k in 1..15) { val x = BX0 + (BX1 - BX0) * k / 16f; line(c, Color.rgb(28, 28, 38), 0.6f, x, BY0, x, BY1) }
+
+                  // ---- 안쪽 벽 네온 JJ ----
+                  val frame = (t * 300).toInt()
+                  val on = when {
+                      t < 0.52f -> 0f
+                      t > 0.66f -> 1f
+                      flick(frame) > 0.45f -> 1f
+                      else -> 0.12f
+                  }
+                  val js = 70f * u * z
+                  jPaint.textSize = js
+                  val jw = jPaint.measureText("J")
+                  val jcx = px(zcx); val jcy = py(zcy - 6f)
+                  val base = jcy + js * 0.36f
+                  val jx1 = jcx - jw * 0.98f; val jx2 = jcx - jw * 0.22f
+                  if (on > 0f) {
+                      jPaint.color = pink; jPaint.strokeWidth = 4f * u * z
+                      jPaint.maskFilter = BlurMaskFilter(7f * u * z, BlurMaskFilter.Blur.NORMAL)
+                      jPaint.alpha = (255 * on).toInt()
+                      repeat(2) { c.drawText("J", jx1, base, jPaint); c.drawText("J", jx2, base, jPaint) }
+                      jPaint.maskFilter = null
+                      jPaint.color = Color.rgb(255, 225, 242); jPaint.alpha = (255 * (0.3f + 0.7f * on)).toInt()
+                  } else {
+                      jPaint.maskFilter = null; jPaint.color = Color.rgb(90, 40, 70); jPaint.alpha = 130
+                  }
+                  jPaint.strokeWidth = 1.6f * u * z
+                  c.drawText("J", jx1, base, jPaint); c.drawText("J", jx2, base, jPaint)
+
+                  // ---- 틀: 헤더·실·기둥·코너캐스팅·캠키퍼·경첩 ----
+                  rect(c, ORG_D, X0, Y0, X1, OY0)
+                  rect(c, ORG_D, X0, OY1, X1, Y1)
+                  for ((xa, xb) in listOf(Pair(X0, OX0), Pair(OX1, X1))) {
+                      rect(c, ORG, xa, Y0, xb, Y1)
+                      line(c, ORG_D, 2f, xb - 3f, OY0, xb - 3f, OY1)
+                  }
+                  for ((x, y) in listOf(Pair(X0, Y0), Pair(X1 - 18f, Y0), Pair(X0, Y1 - 16f), Pair(X1 - 18f, Y1 - 16f))) {
+                      rect(c, Color.rgb(150, 62, 18), x, y, x + 18f, y + 16f)
+                      rect(c, Color.rgb(40, 20, 10), x + 5f, y + 4f, x + 13f, y + 12f)
+                  }
+                  for (k in floatArrayOf(0.18f, 0.40f, 0.60f, 0.82f)) {
+                      val x = OX0 + (OX1 - OX0) * k
+                      rect(c, STEEL_D, x - 6f, OY0 - 6f, x + 6f, OY0)
+                      rect(c, STEEL_D, x - 6f, OY1, x + 6f, OY1 + 6f)
+                  }
+                  for (xa in floatArrayOf(OX0 - 6f, OX1 - 2f)) for (k in floatArrayOf(0.08f, 0.36f, 0.64f, 0.92f)) {
+                      val y = OY0 + (OY1 - OY0) * k
+                      rect(c, STEEL_D, xa, y - 6f, xa + 8f, y + 6f)
+                  }
+
+                  // ---- 문: 오른쪽 먼저 ----
+                  val rad = Math.toRadians(165.0).toFloat()
+                  drawDoor(c, false, rad * eio((t - 0.34f) / 0.22f), eio((t - 0.27f) / 0.07f))
+                  drawDoor(c, true, rad * eio((t - 0.20f) / 0.22f), eio((t - 0.10f) / 0.08f))
+
+                  // ---- 네온 글자 ----
+                  val on2 = when {
+                      t < 0.8f -> 0f
+                      t > 0.9f -> 1f
+                      flick(frame + 50) > 0.4f -> 1f
+                      else -> 0f
+                  }
+                  if (on2 > 0f) {
+                      val title = "고려아연 TALLY"
+                      val ty = 575f * u + dy
+                      tGlow.textSize = 30 * u; tFill.textSize = 30 * u
+                      tGlow.maskFilter = BlurMaskFilter(7 * u, BlurMaskFilter.Blur.NORMAL)
+                      val tw = tFill.measureText(title)
+                      repeat(2) { c.drawText(title, w / 2 - tw / 2, ty, tGlow) }
+                      c.drawText(title, w / 2 - tw / 2, ty, tFill)
+                      sPaint.textSize = 12 * u
+                      val sub = "CONTAINER TALLY"
+                      c.drawText(sub, w / 2 - sPaint.measureText(sub) / 2, ty + 30 * u, sPaint)
+                  }
+                  // 페이드인
+                  val fi = cl(t / 0.06f)
+                  if (fi < 1f) { p.style = Paint.Style.FILL; p.maskFilter = null; p.color = Color.argb((255 * (1 - fi)).toInt(), 10, 12, 20); c.drawRect(0f, 0f, w, h, p) }
+              }
+
+              /** right=true: 오른쪽 문(경첩 오른쪽). theta: 열린 각도, hrot: 손잡이 돌림(0~1) */
+              private fun drawDoor(c: Canvas, right: Boolean, theta: Float, hrot: Float) {
+                  val hinge = if (right) OX1 else OX0
+                  val sign = if (right) -1f else 1f
+                  val zz = DW * sin(theta)
+                  val s = if (FOC - zz > 40f) FOC / (FOC - zz) else FOC / 40f
+                  val xi = hinge + sign * DW * cos(theta)
+                  val cxm = (OX0 + OX1) / 2; val cym = (OY0 + OY1) / 2
+                  val xip = cxm + (xi - cxm) * s
+                  val yt = cym + (OY0 - cym) * s; val yb = cym + (OY1 - cym) * s
+                  val back = cos(theta) < 0
+                  val shade = 0.25f + 0.75f * abs(cos(theta))
+                  // q: (hinge,OY0) (xip,yt) (xip,yb) (hinge,OY1)
+                  fun qx(uu: Float, vv: Float): Float = hinge + (xip - hinge) * uu
+                  fun qy(uu: Float, vv: Float): Float { val top = OY0 + (yt - OY0) * uu; val bot = OY1 + (yb - OY1) * uu; return top + (bot - top) * vv }
+
+                  poly(c, shadeC(if (back) Color.rgb(120, 60, 26) else ORG, shade), hinge, OY0, xip, yt, xip, yb, hinge, OY1)
+                  // 가로 골판
+                  val ribCol = shadeC(if (back) Color.rgb(96, 48, 20) else ORG_L, shade)
+                  for (k in 0 until 12) {
+                      val v0 = 0.04f + k * (0.92f / 12); val v1 = v0 + 0.92f / 12 * 0.45f
+                      poly(c, ribCol, qx(0.03f, v0), qy(0.03f, v0), qx(0.97f, v0), qy(0.97f, v0), qx(0.97f, v1), qy(0.97f, v1), qx(0.03f, v1), qy(0.03f, v1))
+                  }
+                  // 문짝 테두리
+                  path.reset()
+                  path.moveTo(px(hinge), py(OY0)); path.lineTo(px(xip), py(yt)); path.lineTo(px(xip), py(yb)); path.lineTo(px(hinge), py(OY1)); path.close()
+                  p.style = Paint.Style.STROKE; p.strokeWidth = 3f * u * z; p.color = shadeC(Color.rgb(110, 48, 14), shade); p.maskFilter = null
+                  c.drawPath(path, p); p.style = Paint.Style.FILL
+                  if (back) return
+
+                  // 표기
+                  if (s < 1.15f) {
+                      txt.color = shadeC(Color.rgb(248, 248, 248), shade)
+                      if (right) {
+                          txt.textSize = 11f * u * z
+                          c.drawText("KZCU 251125 0", px(qx(0.86f, 0.05f)), py(qy(0.86f, 0.05f)) + txt.textSize, txt)
+                          c.drawText("22G1", px(qx(0.86f, 0.11f)), py(qy(0.86f, 0.11f)) + txt.textSize, txt)
+                      } else {
+                          txt.textSize = 7f * u * z
+                          val lines = arrayOf("MAX.GROSS 30,480 KG", "TARE      2,185 KG", "NET      28,295 KG", "CU.CAP   33.2 CU.M")
+                          for ((j, s2) in lines.withIndex()) c.drawText(s2, px(qx(0.12f, 0.06f + j * 0.035f)), py(qy(0.12f, 0.06f + j * 0.035f)) + txt.textSize, txt)
+                          poly(c, shadeC(Color.rgb(200, 200, 200), shade), qx(0.12f, 0.24f), qy(0.12f, 0.24f), qx(0.42f, 0.24f), qy(0.42f, 0.24f), qx(0.42f, 0.30f), qy(0.42f, 0.30f), qx(0.12f, 0.30f), qy(0.12f, 0.30f))
+                      }
+                  }
+                  // 로킹바 2개 + 가이드 + 손잡이
+                  for (bu in floatArrayOf(0.30f, 0.72f)) {
+                      line(c, shadeC(STEEL, shade), max(2f, 5f * s) / 2f, qx(bu, -0.015f), qy(bu, -0.015f), qx(bu, 1.015f), qy(bu, 1.015f))
+                      for (v in floatArrayOf(0.2f, 0.5f, 0.8f)) {
+                          val gx = qx(bu, v); val gyy = qy(bu, v)
+                          rect(c, shadeC(STEEL_D, shade), gx - 5f * s, gyy - 3f * s, gx + 5f * s, gyy + 3f * s)
+                      }
+                      val hx = qx(bu, 0.62f); val hy = qy(bu, 0.62f)
+                      val ang = Math.toRadians((90 - 90 * hrot).toDouble()).toFloat()
+                      val len = (OY1 - OY0) * 0.20f * s
+                      val dirx = if (right) 1f else -1f
+                      line(c, shadeC(Color.rgb(220, 222, 228), shade), max(2f, 6f * s) / 2f, hx, hy, hx + dirx * len * cos(ang) * 0.55f, hy + len * sin(ang))
+                      rect(c, shadeC(STEEL_D, shade), hx - 5f * s, hy - 5f * s, hx + 5f * s, hy + 5f * s)
+                      if (hrot < 0.05f) {
+                          val rx = qx(bu, 0.80f); val ry = qy(bu, 0.80f)
+                          rect(c, shadeC(Color.rgb(90, 90, 98), shade), rx - 7f * s, ry - 4f * s, rx + 7f * s, ry + 4f * s)
+                      }
+                  }
+                  // 세관 씰 (오른쪽 문)
+                  if (right && hrot < 0.05f) {
+                      val sx = qx(0.72f, 0.66f); val sy = qy(0.72f, 0.66f)
+                      rect(c, Color.rgb(250, 210, 40), sx + 4f, sy, sx + 10f, sy + 12f)
                   }
               }
           }
