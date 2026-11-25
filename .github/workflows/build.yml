@@ -110,7 +110,7 @@ jobs:
               <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
               <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
               <application
-                  android:label="탈리"
+                  android:label="고려아연TALLY"
                   android:requestLegacyExternalStorage="true"
                   android:icon="@drawable/ic_launcher"
                   android:roundIcon="@drawable/ic_launcher"
@@ -394,11 +394,11 @@ jobs:
                   val line = View(this).apply { background = round(teal, 2); scaleX = 0f }
                   box.addView(line, LinearLayout.LayoutParams(dp(290), dp(4)).apply { topMargin = dp(26) })
                   val t1 = TextView(this).apply {
-                      text = "CONTAINER TALLY"; textSize = 15f; setTextColor(Color.WHITE); letterSpacing = 0.35f
+                      text = "고려아연 TALLY"; textSize = 28f; setTextColor(Color.WHITE); letterSpacing = 0.08f
                       setTypeface(typeface, Typeface.BOLD); alpha = 0f; gravity = Gravity.CENTER
                   }
                   val t2 = TextView(this).apply {
-                      text = "탈리"; textSize = 26f; setTextColor(teal); setTypeface(typeface, Typeface.BOLD)
+                      text = "CONTAINER TALLY"; textSize = 13f; setTextColor(teal); letterSpacing = 0.35f; setTypeface(typeface, Typeface.BOLD)
                       alpha = 0f; gravity = Gravity.CENTER
                   }
                   box.addView(t1, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(14) })
@@ -605,7 +605,7 @@ jobs:
                   stopCamera()
                   screen = "setup"
                   val root = vbox()
-                  root.addView(header("컨테이너 탈리", "PL 불러오기 → 범위 → 스캔 → 컨 지정 → 엑셀  ·  버전 ${BuildInfo.BUILD}"))
+                  root.addView(header("고려아연 TALLY", "PL 불러오기 → 범위 → 스캔 → 컨 지정 → 엑셀  ·  버전 ${BuildInfo.BUILD}"))
                   newRelease?.let { r ->
                       if (r.build > BuildInfo.BUILD)
                           root.addView(btn("🔄  새 버전 ${r.build} 있음 → 업데이트", Color.rgb(200, 90, 20)) { startUpdate(r) })
