@@ -364,8 +364,71 @@ jobs:
                           if (screen == "setup") finish() else showSetup()
                       }
                   })
-                  showSetup()
-                  handleIncoming(intent)
+                  if (savedInstanceState == null) showSplash { showSetup(); handleIncoming(intent) }
+                  else { showSetup(); handleIncoming(intent) }
+              }
+
+              // ======================= 시작 화면 (JJ) =======================
+              private fun showSplash(next: () -> Unit) {
+                  screen = "splash"
+                  val navy = Color.rgb(12, 16, 32)
+                  val teal = Color.rgb(20, 210, 185)
+                  val sw = resources.displayMetrics.widthPixels.toFloat()
+                  var done = false
+                  val go = { if (!done) { done = true; next() } }
+
+                  val root = FrameLayout(this).apply { setBackgroundColor(navy) }
+                  val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+                  val face = Typeface.create("sans-serif-black", Typeface.BOLD_ITALIC)
+                  fun jView(color: Int) = TextView(this).apply {
+                      text = "J"; textSize = 128f; setTextColor(color); typeface = face
+                      includeFontPadding = false
+                      setShadowLayer(1f, 0f, 0f, teal)
+                  }
+                  val j1 = jView(Color.WHITE)
+                  val j2 = jView(teal)
+                  val jRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+                  jRow.addView(j1)
+                  jRow.addView(j2, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = -dp(26) })
+                  box.addView(jRow)
+                  val line = View(this).apply { background = round(teal, 2); scaleX = 0f }
+                  box.addView(line, LinearLayout.LayoutParams(dp(290), dp(4)).apply { topMargin = dp(26) })
+                  val t1 = TextView(this).apply {
+                      text = "CONTAINER TALLY"; textSize = 15f; setTextColor(Color.WHITE); letterSpacing = 0.35f
+                      setTypeface(typeface, Typeface.BOLD); alpha = 0f; gravity = Gravity.CENTER
+                  }
+                  val t2 = TextView(this).apply {
+                      text = "탈리"; textSize = 26f; setTextColor(teal); setTypeface(typeface, Typeface.BOLD)
+                      alpha = 0f; gravity = Gravity.CENTER
+                  }
+                  box.addView(t1, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(14) })
+                  box.addView(t2, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) })
+                  root.addView(box, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+                  root.setOnClickListener { go() }
+                  setContentView(root)
+
+                  val dec = android.view.animation.DecelerateInterpolator(2.2f)
+                  j1.translationX = -sw; j1.alpha = 0f
+                  j2.translationX = sw; j2.alpha = 0f
+                  j1.animate().translationX(0f).alpha(1f).setDuration(650).setInterpolator(dec).start()
+                  j2.animate().translationX(0f).alpha(1f).setStartDelay(180).setDuration(650).setInterpolator(dec).start()
+                  android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+                      startDelay = 600; duration = 900
+                      addUpdateListener { a ->
+                          val v = a.animatedValue as Float
+                          val r = 6f + 44f * Math.sin(Math.PI * v).toFloat() + 14f * v
+                          j1.setShadowLayer(r, 0f, 0f, teal); j2.setShadowLayer(r, 0f, 0f, teal)
+                      }
+                      start()
+                  }
+                  // 반짝임: 살짝 커졌다 돌아오기
+                  jRow.animate().scaleX(1.06f).scaleY(1.06f).setStartDelay(900).setDuration(220).withEndAction {
+                      jRow.animate().scaleX(1f).scaleY(1f).setDuration(260).start()
+                  }.start()
+                  line.animate().scaleX(1f).setStartDelay(950).setDuration(520).setInterpolator(dec).start()
+                  t1.animate().alpha(1f).setStartDelay(1250).setDuration(500).start()
+                  t2.animate().alpha(1f).setStartDelay(1400).setDuration(500).start()
+                  root.postDelayed({ go() }, 2500)
               }
 
               override fun onNewIntent(intent: Intent) {
@@ -1652,7 +1715,7 @@ jobs:
                               newRelease = r
                               if (r != null && r.build > BuildInfo.BUILD) {
                                   if (screen == "setup") redraw()
-                                  if (!silent) AlertDialog.Builder(this).setTitle("새 버전 ${r.build}")
+                                  AlertDialog.Builder(this).setTitle("새 버전 ${r.build}")
                                       .setMessage("지금 버전 ${BuildInfo.BUILD} → 새 버전 ${r.build}\n업데이트할까요?")
                                       .setPositiveButton("업데이트") { _, _ -> startUpdate(r) }
                                       .setNegativeButton("나중에", null).show()
