@@ -574,6 +574,9 @@ jobs:
                       if (bookings.isEmpty()) toast("PL을 먼저 불러오세요") else showScan()
                   }.apply { textSize = 19f; minHeight = dp(64) })
                   root.addView(btn("📋  결과 · 컨테이너 지정 · 엑셀", PRIMARY) { showResult() })
+                  root.addView(btn("🧪  테스트 모드 (사진 없이)", Color.rgb(140, 60, 160)) {
+                      if (bookings.isEmpty()) toast("PL을 먼저 불러오세요") else showScan(true)
+                  })
                   root.addView(section("초기화"))
                   root.addView(row(
                       btn("탈리 기록 지우기", Color.rgb(70, 40, 46)) {
@@ -824,12 +827,14 @@ jobs:
               }
 
               // ======================= 스캔 화면 =======================
-              private fun showScan() {
+              private var testMode = false
+              private var quiet = false
+
+              private fun showScan(test: Boolean = false) {
                   if (bookings.isEmpty()) { showSetup(); return }
+                  stopCamera()
                   screen = "scan"
-                  val root = FrameLayout(this)
-                  val previewView = PreviewView(this)
-                  root.addView(previewView, FrameLayout.LayoutParams(-1, -1))
+                  testMode = test
 
                   topPanel = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
@@ -839,24 +844,42 @@ jobs:
                   tvHeader = label("", 24f, bold = true)
                   slotsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                   tvProg = label("", 15f, GOLD, true)
+                  if (test) topPanel.addView(chip("🧪 테스트 모드 — 카메라 없이 버튼으로 스캔", Color.rgb(140, 60, 160)))
                   topPanel.addView(tvHeader); topPanel.addView(slotsBox); topPanel.addView(tvProg)
-                  root.addView(topPanel, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply { setMargins(dp(10), dp(10), dp(10), 0) })
 
                   val bottom = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       setPadding(dp(10), dp(10), dp(10), dp(6))
                       background = round(Color.argb(215, 16, 18, 23), 18)
                   }
-                  tvStatus = label("번호가 보이게 비추면 자동 인식", 18f, Color.WHITE, true).apply {
+                  tvStatus = label(if (test) "아래 버튼으로 스캔을 흉내 냅니다" else "번호가 보이게 비추면 자동 인식", 18f, Color.WHITE, true).apply {
                       gravity = Gravity.CENTER; background = round(Color.argb(120, 60, 66, 80), 12); setPadding(dp(8), dp(10), dp(8), dp(10))
                   }
                   btnTorch = btn("🔦") { toggleTorch() }
                   btnZoom = btn("1x") { cycleZoom() }
                   bottom.addView(tvStatus)
-                  bottom.addView(row(btn("↩ 되돌리기", Color.rgb(90, 70, 40)) { undo() }, btn("⌨ 번호입력") { manualInput() }, btnTorch, btnZoom))
+                  if (test) bottom.addView(row(btn("↩ 되돌리기", Color.rgb(90, 70, 40)) { undo() }, btn("⌨ 번호입력") { manualInput() }))
+                  else bottom.addView(row(btn("↩ 되돌리기", Color.rgb(90, 70, 40)) { undo() }, btn("⌨ 번호입력") { manualInput() }, btnTorch, btnZoom))
                   bottom.addView(row(btn("📋 결과·컨지정", PRIMARY) { showResult() }, btn("⚙ 설정") { showSetup() }))
-                  root.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { setMargins(dp(10), 0, dp(10), dp(10)) })
 
+                  if (test) {
+                      val lin = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(BG); setPadding(dp(10), dp(10), dp(10), dp(10)) }
+                      lin.addView(topPanel, LinearLayout.LayoutParams(-1, -2))
+                      val tb = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(6), 0, dp(6)) }
+                      buildTestButtons(tb)
+                      lin.addView(ScrollView(this).apply { addView(tb) }, LinearLayout.LayoutParams(-1, 0, 1f))
+                      lin.addView(bottom, LinearLayout.LayoutParams(-1, -2))
+                      setContentView(lin)
+                      refreshScanUi()
+                      scanning = true
+                      return
+                  }
+
+                  val root = FrameLayout(this)
+                  val previewView = PreviewView(this)
+                  root.addView(previewView, FrameLayout.LayoutParams(-1, -1))
+                  root.addView(topPanel, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply { setMargins(dp(10), dp(10), dp(10), 0) })
+                  root.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { setMargins(dp(10), 0, dp(10), dp(10)) })
                   setContentView(root)
                   refreshScanUi()
                   scanning = true
@@ -866,6 +889,84 @@ jobs:
                       pendingPreview = previewView
                       camPerm.launch(Manifest.permission.CAMERA)
                   }
+              }
+
+              // ---------- 테스트 모드 ----------
+              private fun nextUnscanned(b: Booking): Item? =
+                  b.items.filter { inRange(b.coa, it.bd) && groups.none { g -> g.coa == b.coa && g.bds.contains(it.bd) } }.randomOrNull()
+
+              private fun testScan(b: Booking): Boolean {
+                  val it = nextUnscanned(b)
+                  if (it == null) { tvStatus.setTextColor(GOLD); tvStatus.text = "${b.coa}: 범위 안에 남은 화물 없음"; return false }
+                  lastNotice.clear()
+                  val before = history.size
+                  handleConfirmed(b, it)
+                  return history.size > before
+              }
+
+              private fun buildTestButtons(tb: LinearLayout) {
+                  tb.addView(section("화물 찍기 (실제 스캔과 같은 검사)"))
+                  for (b in bookings) {
+                      tb.addView(row(
+                          btn("📷 ${b.coa} 1개", TEAL) { testScan(b) },
+                          btn("⚡ ${b.coa} 5개", PRIMARY) {
+                              quiet = true
+                              var n = 0
+                              while (n < per && testScan(b)) { n++; if (currentGroup() == null) break }
+                              quiet = false
+                              beep(ToneGenerator.TONE_PROP_ACK, 300)
+                          }
+                      ))
+                  }
+                  tb.addView(section("경고 테스트"))
+                  tb.addView(row(
+                      btn("🔁 중복 찍기") {
+                          val k = history.lastOrNull()
+                          if (k == null) toast("먼저 1개 찍으세요")
+                          else {
+                              val b = booking(k.substringBeforeLast(':')); val it = b?.byBd?.get(k.substringAfterLast(':').toInt())
+                              if (b != null && it != null) { lastNotice.clear(); handleConfirmed(b, it) }
+                          }
+                      },
+                      btn("🚫 범위 밖") {
+                          val pair = bookings.firstNotNullOfOrNull { b -> b.items.firstOrNull { !inRange(b.coa, it.bd) }?.let { Pair(b, it) } }
+                          if (pair == null) toast("범위 밖 화물이 없습니다 (범위를 먼저 지정)") else { lastNotice.clear(); handleConfirmed(pair.first, pair.second) }
+                      }
+                  ))
+                  tb.addView(row(
+                      btn("❓ PL에 없는 LOT") { lastNotice.clear(); notice("xtest", "⚠ PL에 없는 LOT …20991231Z999999", RED, error = true) },
+                      btn("🔀 묶음 중 섞기") {
+                          val g = currentGroup()
+                          val other = bookings.firstOrNull { it.coa != g?.coa }
+                          if (g == null || other == null) toast("묶음을 1~4개 채운 상태에서, 발신번호가 2개 이상일 때 됩니다")
+                          else { val it = nextUnscanned(other); if (it != null) { lastNotice.clear(); handleConfirmed(other, it) } }
+                      }
+                  ))
+                  tb.addView(section("한 번에"))
+                  tb.addView(btn("🧪 전체 범위 자동 채우기", Color.rgb(140, 60, 160)) {
+                      quiet = true
+                      for (b in bookings) {
+                          while (true) {
+                              val g = currentGroup()
+                              if (g != null && g.coa != b.coa) break
+                              if (!testScan(b)) break
+                          }
+                      }
+                      quiet = false
+                      beep(ToneGenerator.TONE_PROP_ACK, 500)
+                  })
+                  tb.addView(btn("🚛 컨테이너 목록 순서대로 자동 지정") {
+                      var n = 0
+                      for (b in bookings) {
+                          val list = clists[b.coa]?.conts ?: continue
+                          for (g in groups.filter { it.coa == b.coa && it.cntr.isEmpty() }) {
+                              val free = list.firstOrNull { c -> groups.none { it.coa == b.coa && it.cntr == c.cntr } } ?: break
+                              g.cntr = free.cntr; n++
+                          }
+                      }
+                      saveState(); toast("컨 ${n}개 자동 지정 (테스트)")
+                  })
+                  tb.addView(label("※ 테스트 기록은 실제 기록과 같이 저장됩니다. 끝나면 설정 → '탈리 기록 지우기'를 누르세요.", 12f, SUB))
               }
 
               private fun startCamera(pv: PreviewView? = null) {
@@ -1197,10 +1298,11 @@ jobs:
                   }
               }
 
-              private fun beep(t: Int, ms: Int) { try { tone?.startTone(t, ms) } catch (e: Exception) { } }
+              private fun beep(t: Int, ms: Int) { if (quiet) return; try { tone?.startTone(t, ms) } catch (e: Exception) { } }
 
               @Suppress("DEPRECATION")
               private fun vib(ms: Int) {
+                  if (quiet) return
                   try {
                       val v = getSystemService(VIBRATOR_SERVICE) as? Vibrator ?: return
                       if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createOneShot(ms.toLong(), VibrationEffect.DEFAULT_AMPLITUDE))
@@ -1249,7 +1351,7 @@ jobs:
                   root.addView(header("결과 · 컨테이너 지정",
                       "묶음 ${groups.size}개 · 컨 미지정 ${unassigned}개 · 중복 " + (if (dupCount() == 0) "없음" else "${dupCount()}건")))
                   root.addView(btn("📄  전체 발신번호 엑셀 만들기", TEAL) { exportChecked(bookings.filter { b -> groups.any { it.coa == b.coa } }.map { it.coa }) })
-                  root.addView(row(btn("▶ 스캔 계속", PRIMARY) { showScan() }, btn("⚙ 설정") { showSetup() }))
+                  root.addView(row(btn("▶ 스캔 계속", PRIMARY) { showScan(testMode) }, btn("⚙ 설정") { showSetup() }))
 
                   for (b in bookings) {
                       val gs = groups.filter { it.coa == b.coa }
