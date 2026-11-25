@@ -2181,13 +2181,6 @@ jobs:
           }
           TALLY_EOF
           echo "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" | base64 -d > app/tally.jks
-          cat > app/src/main/java/com/nakyung/tally/BuildInfo.kt <<'TALLY_EOF'
-          package com.nakyung.tally
-          object BuildInfo {
-              const val REPO = "${{ github.repository }}"
-              const val BUILD = ${{ github.run_number }}
-          }
-          TALLY_EOF
           mkdir -p app/src/main/assets
           base64 -d > app/src/main/assets/template.xlsx <<'TALLY_EOF'
           UEsDBBQAAAAIAAAAIQAhjEY6ZAEAAIwFAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbMWUy04DMQxF
@@ -2678,12 +2671,18 @@ jobs:
           AA8ADwASBAAA5GcAAAAA
           TALLY_EOF
 
+      - name: Build info
+        working-directory: proj
+        run: |
+          printf 'package com.nakyung.tally\nobject BuildInfo {\n    const val REPO = "%s"\n    const val BUILD = %s\n}\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_NUMBER" > app/src/main/java/com/nakyung/tally/BuildInfo.kt
+          cat app/src/main/java/com/nakyung/tally/BuildInfo.kt
+
       - name: Build APK
         working-directory: proj
         run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: Rename APK
-        run: cp proj/app/build/outputs/apk/release/app-release.apk "Tally-${{ github.run_number }}.apk"
+        run: cp proj/app/build/outputs/apk/release/app-release.apk "Tally-$GITHUB_RUN_NUMBER.apk"
 
       - name: Publish APK (Releases)
         uses: softprops/action-gh-release@v2
