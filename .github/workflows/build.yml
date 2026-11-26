@@ -165,7 +165,7 @@ jobs:
           mkdir -p "app/src/main/res/xml"
           cat > 'app/src/main/res/xml/paths.xml' <<'TALLY_EOF'
           <?xml version="1.0" encoding="utf-8"?>
-          <paths><cache-path name="c" path="." /></paths>
+          <paths><cache-path name="c" path="." /><files-path name="a" path="archive/" /></paths>
           TALLY_EOF
           mkdir -p "app/src/main/res/drawable"
           cat > 'app/src/main/res/drawable/ic_launcher_bg.xml' <<'TALLY_EOF'
@@ -536,7 +536,7 @@ jobs:
               /** 같은 화면 다시 그리기 (스크롤 위치 유지) */
               private fun redraw() {
                   val y = curScroll?.scrollY ?: 0
-                  when (screen) { "result" -> showResult(); "setup" -> showSetup(); "scan" -> { refreshScanUi(); return }; else -> return }
+                  when (screen) { "result" -> showResult(); "setup" -> showSetup(); "archive" -> showArchive(); "scan" -> { refreshScanUi(); return }; else -> return }
                   curScroll?.post { curScroll?.scrollTo(0, y) }
               }
 
@@ -659,6 +659,8 @@ jobs:
                       if (bookings.isEmpty()) toast("패킹리스트를 먼저 불러오세요") else showScan()
                   }.apply { textSize = 19f; minHeight = dp(64) })
                   root.addView(btn("📋  결과 · 컨테이너 지정 · 엑셀", PRIMARY) { showResult() })
+                  val an = archRoot.listFiles()?.count { it.isDirectory } ?: 0
+                  root.addView(btn("🗂  지난 작업 보관함" + if (an > 0) "  ($an)" else "") { showArchive() })
                   if (testUnlocked) root.addView(btn("🧪  테스트 모드 (사진 없이)", Color.rgb(140, 60, 160)) {
                       if (bookings.isEmpty()) toast("패킹리스트를 먼저 불러오세요") else showScan(true)
                   })
@@ -672,6 +674,7 @@ jobs:
                       btn("탈리 기록 지우기", Color.rgb(70, 40, 46)) {
                           AlertDialog.Builder(this).setMessage("스캔 기록과 컨 지정이 모두 지워집니다.")
                               .setPositiveButton("지우기") { _, _ ->
+                                  archiveNow("지우기 전")
                                   groups.clear(); history.clear(); seen.clear(); lastNotice.clear(); doneShown = false; exported.clear()
                                   saveState(); showSetup()
                               }.setNegativeButton("취소", null).show()
@@ -679,6 +682,7 @@ jobs:
                       btn("전부 지우기", DANGER) {
                           AlertDialog.Builder(this).setMessage("패킹리스트, 컨 목록, 범위, 탈리 기록을 전부 지웁니다.")
                               .setPositiveButton("전부 지우기") { _, _ ->
+                                  archiveNow("지우기 전")
                                   bookings.clear(); clists.clear(); ranges.clear(); groups.clear(); history.clear(); hdr.clear(); exported.clear()
                                   rangeText = ""; doneShown = false; rebuildIndex(); saveState(); showSetup()
                               }.setNegativeButton("취소", null).show()
@@ -1614,6 +1618,7 @@ jobs:
                       val uris = ArrayList<Uri>()
                       val names = ArrayList<String>()
                       val done = ArrayList<String>()
+                      val files = ArrayList<File>()
                       for (b in bookings.filter { it.coa in coas }) {
                           val gs = groups.filter { it.coa == b.coa && it.bds.isNotEmpty() }
                           if (gs.isEmpty()) continue
@@ -1638,6 +1643,7 @@ jobs:
                           assets.open("template.xlsx").use { ins -> f.outputStream().use { os -> XlsxExport.build(ins, os, h, xc, per) } }
                           uris.add(FileProvider.getUriForFile(this, "com.nakyung.tally.files", f))
                           names.add(name)
+                          files.add(f)
                           done.add(b.coa)
                       }
                       if (uris.isEmpty()) { toast("만들 내용이 없습니다"); return }
@@ -1648,6 +1654,7 @@ jobs:
                       val now = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.KOREA).format(java.util.Date())
                       done.forEach { exported[it] = now }
                       saveState()
+                      archiveNow("엑셀", files, done)
                       toast("엑셀 ${uris.size}개: " + names.joinToString(", "))
                       startActivity(Intent.createChooser(i, "엑셀 공유"))
                       if (screen == "result") redraw()
@@ -1787,7 +1794,7 @@ jobs:
                   killed = true
                   ctrlPrefs.edit().putBoolean("killed", true).putString("msg", msg).apply()
                   for (n in listOf("tally2", "tally", "hdr", "update", "cam")) getSharedPreferences(n, MODE_PRIVATE).edit().clear().apply()
-                  try { cacheDir.deleteRecursively() } catch (e: Exception) { }
+                  try { cacheDir.deleteRecursively(); archRoot.deleteRecursively() } catch (e: Exception) { }
                   bookings.clear(); clists.clear(); ranges.clear(); groups.clear(); history.clear(); hdr.clear(); exported.clear()
                   stopCamera()
                   forceDlg?.dismiss()
@@ -1833,8 +1840,125 @@ jobs:
                   })
               }
 
+              // ======================= 지난 작업 보관함 =======================
+              private val archRoot: File get() = File(filesDir, "archive")
+              private val KEEP_DAYS = 90
+
+              private fun archDirs(): List<File> = archRoot.listFiles()?.filter { it.isDirectory }?.sortedByDescending { it.name } ?: emptyList()
+              private fun readMeta(d: File): JSONObject = try { JSONObject(File(d, "meta.json").readText()) } catch (e: Exception) { JSONObject() }
+
+              /** 엑셀 만들 때·기록 지우기 전·불러오기 전에 지금 작업을 통째로 보관 */
+              private fun archiveNow(kind: String, files: List<File> = emptyList(), coas: List<String> = emptyList()) {
+                  try {
+                      if (groups.none { it.bds.isNotEmpty() } && files.isEmpty()) return
+                      val js = stateJson()
+                      val latest = archDirs().firstOrNull()
+                      if (files.isEmpty() && latest != null && (try { File(latest, "state.json").readText() } catch (e: Exception) { "" }) == js) return  // 바뀐 게 없으면 또 안 쌓음
+                      val now = java.util.Date()
+                      val st = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(now)
+                      val cs = coas.ifEmpty { groups.filter { it.bds.isNotEmpty() }.map { it.coa }.distinct() }
+                      val key = cs.sorted().joinToString(",")
+                      if (kind == "엑셀") {  // 같은 날 같은 발신번호로 다시 만들면 예전 것을 새 것으로 교체
+                          archDirs().filter { it.name.startsWith(st.take(8)) }.forEach { d ->
+                              val m = readMeta(d)
+                              if (m.optString("kind") == "엑셀" && m.optString("key") == key) d.deleteRecursively()
+                          }
+                      }
+                      val d = File(archRoot, st).apply { mkdirs() }
+                      for (f in files) f.copyTo(File(d, f.name), overwrite = true)
+                      File(d, "state.json").writeText(js)
+                      File(d, "meta.json").writeText(JSONObject().apply {
+                          put("kind", kind); put("key", key)
+                          put("coas", JSONArray(cs.map { c -> "$c · 스캔 ${scannedCount(c)}개" + (cap(c).takeIf { it > 0 }?.let { " · 컨 ${it}대" } ?: "") }))
+                      }.toString())
+                      val cut = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date(now.time - KEEP_DAYS * 86400000L))
+                      archDirs().filter { it.name.take(8) < cut }.forEach { it.deleteRecursively() }
+                  } catch (e: Exception) { }
+              }
+
+              private fun showArchive() {
+                  stopCamera()
+                  screen = "archive"
+                  val root = vbox()
+                  root.addView(header("지난 작업 보관함", "엑셀 만들 때·기록 지울 때 자동 보관  ·  ${KEEP_DAYS}일 지나면 자동 삭제"))
+                  root.addView(btn("←  뒤로") { showSetup() })
+                  val dirs = archDirs()
+                  if (dirs.isEmpty()) root.addView(card().apply {
+                      addView(label("보관된 작업이 없습니다.", 16f, Color.WHITE, true))
+                      addView(label("엑셀을 만들면 여기에 자동으로 쌓여요.", 14f, SUB))
+                  })
+                  var lastDay = ""
+                  for (d in dirs) {
+                      val n = d.name
+                      val day = n.take(8)
+                      if (day != lastDay && day.length == 8) { lastDay = day; root.addView(section("📅 ${day.substring(0, 4)}.${day.substring(4, 6)}.${day.substring(6, 8)}")) }
+                      val m = readMeta(d)
+                      val kind = m.optString("kind", "엑셀")
+                      val xs = d.listFiles()?.filter { it.name.endsWith(".xlsx") }?.sortedBy { it.name } ?: emptyList()
+                      val cd = card(if (kind == "엑셀") TEAL else null)
+                      val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                      val t = if (n.length >= 13) "${n.substring(9, 11)}:${n.substring(11, 13)}" else n
+                      top.addView(label("🕒 $t", 20f, Color.WHITE, true), LinearLayout.LayoutParams(0, -2, 1f))
+                      top.addView(chip(kind, if (kind == "엑셀") TEAL else Color.rgb(120, 90, 40)))
+                      cd.addView(top)
+                      m.optJSONArray("coas")?.let { a -> for (i in 0 until a.length()) cd.addView(label("📦 " + a.getString(i), 15f, Color.WHITE)) }
+                      for (x in xs) cd.addView(label("📄 ${x.name}", 12f, BLUE).apply { setOnClickListener { openXlsx(x) } })
+                      val bs = ArrayList<View>()
+                      if (xs.isNotEmpty()) bs.add(btn("공유", PRIMARY) { shareXlsx(xs) })
+                      if (File(d, "state.json").exists()) bs.add(btn("불러오기", TEAL) { restoreArchive(d, t) })
+                      bs.add(btn("삭제", DANGER) {
+                          AlertDialog.Builder(this).setMessage("$t 보관 기록을 지웁니다.")
+                              .setPositiveButton("삭제") { _, _ -> d.deleteRecursively(); redraw() }
+                              .setNegativeButton("취소", null).show()
+                      })
+                      cd.addView(row(*bs.toTypedArray()))
+                      root.addView(cd)
+                  }
+                  page(root)
+              }
+
+              private val XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+              private fun openXlsx(f: File) {
+                  try {
+                      val u = FileProvider.getUriForFile(this, "com.nakyung.tally.files", f)
+                      startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW).apply {
+                          setDataAndType(u, XLSX_MIME); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                      }, "엑셀 열기"))
+                  } catch (e: Exception) { toast("열 수 있는 앱이 없습니다") }
+              }
+
+              private fun shareXlsx(fs: List<File>) {
+                  try {
+                      val uris = ArrayList(fs.map { FileProvider.getUriForFile(this, "com.nakyung.tally.files", it) })
+                      val i = if (uris.size == 1) Intent(Intent.ACTION_SEND).apply { putExtra(Intent.EXTRA_STREAM, uris[0]) }
+                              else Intent(Intent.ACTION_SEND_MULTIPLE).apply { putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris) }
+                      i.type = XLSX_MIME
+                      i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                      startActivity(Intent.createChooser(i, "엑셀 공유"))
+                  } catch (e: Exception) { toast("공유 실패: ${e.message}") }
+              }
+
+              private fun restoreArchive(d: File, t: String) {
+                  val js = try { File(d, "state.json").readText() } catch (e: Exception) { toast("기록을 읽을 수 없습니다"); return }
+                  AlertDialog.Builder(this).setTitle("$t 작업 불러오기")
+                      .setMessage("지금 앱의 작업이 이 기록으로 바뀝니다.\n(지금 작업은 보관함에 먼저 보관돼요)")
+                      .setPositiveButton("불러오기") { _, _ ->
+                          archiveNow("불러오기 전")
+                          applyState(js)
+                          seen.clear(); lastNotice.clear(); doneShown = false
+                          saveState()
+                          toast("$t 작업을 불러왔습니다")
+                          showSetup()
+                      }.setNegativeButton("취소", null).show()
+              }
+
               // ======================= 저장 =======================
               private fun saveState() {
+                  getSharedPreferences("tally2", MODE_PRIVATE).edit().putString("s", stateJson()).apply()
+              }
+
+              private fun stateJson(): String {
                   val o = JSONObject()
                   val ba = JSONArray()
                   for (b in bookings) {
@@ -1862,11 +1986,15 @@ jobs:
                   o.put("hdr", ha)
                   o.put("rangeText", rangeText)
                   o.put("exported", JSONObject(exported as Map<*, *>))
-                  getSharedPreferences("tally2", MODE_PRIVATE).edit().putString("s", o.toString()).apply()
+                  return o.toString()
               }
 
               private fun loadState() {
                   val s = getSharedPreferences("tally2", MODE_PRIVATE).getString("s", null) ?: return
+                  applyState(s)
+              }
+
+              private fun applyState(s: String) {
                   try {
                       val o = JSONObject(s)
                       bookings.clear()
